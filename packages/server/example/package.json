@@ -1,0 +1,10 @@
+{
+  "name": "example",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.mjs",
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^3.21.4"
+  }
+}

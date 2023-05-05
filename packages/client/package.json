@@ -1,0 +1,19 @@
+{
+  "name": "@jig/client",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "chalk": "^5.2.0",
+    "conf": "^11.0.1",
+    "ink": "^4.2.0",
+    "react": "^18.2.0",
+    "yargs": "^17.7.2"
+  }
+}
