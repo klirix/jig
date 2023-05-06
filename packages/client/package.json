@@ -12,7 +12,7 @@
   "author": "Askhat Saiapov",
   "license": "MIT",
   "scripts": {
-    "build": "rollup -i src/index.mjs -o dist/index.mjs"
+    "build": "rollup -c rollup.config.js"
   },
   "private": false,
   "dependencies": {
