@@ -1,6 +1,6 @@
 {
   "name": "jig-client",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "",
   "type": "module",
   "main": "src/index.mjs",
@@ -21,7 +21,6 @@
     "conf": "^11.0.1",
     "glob": "^10.2.2",
     "inquirer": "^9.2.1",
-    "jig": "^1.0.0",
     "node-fetch": "^3.3.1",
     "tar": "^6.1.14",
     "yargs": "^17.7.2"
