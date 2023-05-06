@@ -90,7 +90,10 @@ deploymentsRouter.post("/", async (req, res) => {
 
     const restartTimes = config.restartPolicy?.match(/(:\d{1,3})/)?.[0];
 
-    await stopContainerIfExists((c) => c.Labels["jig.name"] === config.name);
+    await stopContainerIfExists(
+      (c) => c.Labels["jig.name"] === config.name,
+      true
+    );
     console.log("Deleted old container!!!");
 
     const traiefikRouterName = `traefik.http.routers.${config.name}`;
