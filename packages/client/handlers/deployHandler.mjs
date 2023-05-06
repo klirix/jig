@@ -3,6 +3,8 @@ import { existsSync, readFileSync } from "fs";
 import { glob } from "glob";
 import tar from "tar";
 import chalk from "chalk";
+import { AxiosError } from "axios";
+import { isAxiosError } from "axios";
 
 export const deployHandler = async ({ config, ...authOptions }) => {
   try {
@@ -74,7 +76,7 @@ const uploadBuild = (httpClient, data, config, onProgress) =>
 
       stream.on("end", res);
     } catch (err) {
-      if (err instanceof AxiosError) {
+      if (isAxiosError(err)) {
         err.response.data.on("data", (err) => {
           console.log(chalk.red(`> ` + JSON.parse(err.toString()).error));
         });
