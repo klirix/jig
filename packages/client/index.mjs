@@ -1,56 +1,41 @@
-import Conf from "conf";
 import yargs from "yargs/yargs";
 import { hideBin } from "yargs/helpers";
-import axios from "axios";
 import chalk from "chalk";
+import { readFileSync, existsSync, createWriteStream, cpSync } from "fs";
+import { config, makeHttpClient } from "./httpClient.mjs";
+import tar from "tar";
+import { glob } from "glob";
+import { Axios } from "axios";
+import { AxiosError } from "axios";
 
 const NOOP = () => {};
 
-const config = new Conf({ projectName: "jig" });
-
-const httpClient = axios.create({
-  baseURL: config.get("endpoint"),
-  // timeout: 1000,
-  headers: { Authorization: "Bearer " + config.get("token") },
-});
-
-const isLoggedIn = () => {
-  if (!config.get("token")) {
-    console.log("You need to login, use token command!");
-    return false;
+const setTokenHandler = ({ token }) => {
+  config.set("token", token);
+  console.log("Token successfully set!");
+};
+const getSetEndpointHandler = ({ endpoint }) => {
+  if (endpoint) {
+    config.set("endpoint", endpoint);
+  } else {
+    console.log(`Current enpoint is: ${config.get("endpoint")}`);
   }
-  if (!config.get("endpoint")) {
-    console.log("Jig endpoint needs to be set, try endpoint command");
-    return false;
+};
+const deleteDeploymentHandler = async ({ name, ...auth }) => {
+  try {
+    const httpClient = makeHttpClient(auth);
+    await httpClient.delete("/deployments/" + name);
+
+    console.log(chalk.green`> Successfully removed: ` + name);
+  } catch (error) {
+    console.log(chalk.red`> Failed to remove: ` + name);
+    if (error instanceof Error) console.log(chalk.red`> ${error.message}`);
   }
-  return true;
 };
 
-yargs(hideBin(process.argv))
-  .command(
-    "endpoint [endpoint]",
-    "Set endpoint",
-    (y) => {},
-    ({ endpoint }) => {
-      if (endpoint) {
-        config.set("endpoint", endpoint);
-      } else {
-        console.log(`Current enpoint is: ${config.get("endpoint")}`);
-      }
-    }
-  )
-  .command(
-    "token <token>",
-    "Set token",
-    (y) => {},
-    ({ token }) => {
-      config.set("token", token);
-      console.log("Token successfully set!");
-    }
-  )
-  .command("ls", "List deployments", NOOP, async () => {
-    if (!isLoggedIn()) return;
-
+const listDeploymentHandler = async ({ ...auth }) => {
+  try {
+    const httpClient = makeHttpClient(auth);
     const { data: deployments } = await httpClient.get("/deployments");
     const tableLengths = deployments.reduce(
       (acc, d) => ({
@@ -76,39 +61,142 @@ yargs(hideBin(process.argv))
       ];
       console.log(`  ${name}  ${rule}  ${status}`);
     }
-  })
-  .command("rm <name>", "Delete deployment", NOOP, async ({ name }) => {
-    if (!isLoggedIn()) return;
+  } catch (error) {
+    console.log(chalk.red`> Failed to fetch deployments`);
+    if (error instanceof Error) console.log(chalk.red`> ${error.message}`);
+  }
+};
 
-    try {
-      await httpClient.delete("/deployments/" + name);
+yargs(hideBin(process.argv))
+  .command("endpoint [endpoint]", "Set endpoint", NOOP, getSetEndpointHandler)
+  .command("token <token>", "Set token", (y) => {}, setTokenHandler)
+  .command(
+    "ls",
+    "List deployments",
+    (y) => {
+      y.option("endpoint", {
+        alias: "e",
+        string: true,
+        description:
+          "override endpoint, default is in config or env variable $JIG_ENDPOINT",
+      });
+      y.option("token", {
+        alias: "t",
+        string: true,
+        description: "override token, default in config or $JIG_TOKEN",
+      });
+    },
+    listDeploymentHandler
+  )
+  .command("rm <name>", "Delete deployment", NOOP, deleteDeploymentHandler)
+  .command(
+    [`$0`, "deploy"],
+    "Create deployment",
+    (y) => {
+      y.option("config", {
+        alias: "c",
+        string: true,
+        description: "deployment config file",
+        default: "./jig.json",
+      });
+      y.option("endpoint", {
+        alias: "e",
+        string: true,
+        description:
+          "override endpoint, default is in config or env variable $JIG_ENDPOINT",
+      });
+      y.option("token", {
+        alias: "t",
+        string: true,
+        description: "override token, default in config or $JIG_TOKEN",
+      });
+      y.option("ignore", {
+        alias: "i",
+        string: true,
+        description: "ignore file",
+      });
+    },
+    async ({ config, ...authOptions }) => {
+      try {
+        const httpClient = makeHttpClient(authOptions);
+        const configPath = config;
+        if (!existsSync(configPath)) {
+          console.log(chalk.red`> Cannot find config at ` + configPath);
+          return;
+        }
+        const configFile = readFileSync(configPath).toString("utf-8");
 
-      console.log(chalk.green`> Successfully removed: ` + name);
-    } catch (error) {
-      console.log(chalk.red`> Failed to remove: ` + name);
+        let ignorePaths = ["node_modules/**", "."];
+        if (existsSync(".jigignore")) {
+          ignorePaths = readFileSync(".jigignore")
+            .toString("utf-8")
+            .split("\n")
+            .concat(".");
+        }
+
+        const files = await glob("**", { ignore: ignorePaths });
+
+        console.log("> DEBUG: Files: ", files);
+
+        const tarStream = tar.create(
+          {
+            cwd: ".",
+          },
+          files
+        );
+
+        await uploadBuild(httpClient, tarStream, configFile, (progress) => {
+          console.log(`> ` + progress.stream);
+        });
+
+        console.log(chalk.green`> Successfully deployed: ` + config.name);
+      } catch (error) {
+        console.log(chalk.red`> Failed to deploy`);
+      }
     }
-  })
+  )
+  .help().argv;
 
-  .command([`$0`, "deploy"], "Delete deployment", NOOP, async ({}) => {
-    if (!isLoggedIn()) return;
-
+const uploadBuild = (httpClient, data, config, onProgress) =>
+  new Promise(async (res, rej) => {
     try {
       const response = await httpClient({
-        method: "get",
-        headers: { Accept: "application/x-ndjson" },
+        method: "post",
+        headers: {
+          Accept: "application/x-ndjson",
+          "x-jig-config": JSON.stringify(JSON.parse(config)),
+        },
         url: "/deployments/",
         responseType: "stream",
+        data,
       });
-
       const stream = response.data;
+      console.log(`Build process:`);
 
-      stream.on("open", (data) => {
-        console.log(data);
+      stream.on("data", (data) => {
+        const decodedChunk = JSON.parse(data);
+        if (decodedChunk.error) {
+          console.log(
+            chalk.red`> Error during deployemnt: `,
+            decodedChunk.error
+          );
+          rej(new Error(decodedChunk.error));
+        } else {
+          onProgress(decodedChunk);
+        }
       });
 
-      console.log(chalk.green`> Successfully deployed: ` + name);
-    } catch (error) {
-      console.log(chalk.red`> Failed to remove: ` + name);
+      stream.on("end", res);
+    } catch (err) {
+      if (err instanceof AxiosError) {
+        err.response.data.on("data", (err) => {
+          console.log(chalk.red(`> ` + JSON.parse(err.toString()).error));
+        });
+        err.response.data.on("end", () => {
+          rej(err);
+        });
+      } else {
+        rej(err);
+      }
     }
-  })
-  .help().argv;
+  });

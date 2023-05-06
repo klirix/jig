@@ -1,6 +1,6 @@
 import express from "express";
 import requireAuth from "../middlewares/requireAuth";
-import z from "zod";
+import z, { ZodError } from "zod";
 import bodyParser from "body-parser";
 import { secrets } from "../dbs";
 import { randomUUID } from "node:crypto";
@@ -47,28 +47,28 @@ const jigDeployConfigSchema = z.object({
 });
 
 deploymentsRouter.post("/", async (req, res) => {
-  const configString = req.headers["x-jig-config"];
-  if (!configString || typeof configString !== "string")
-    return res.status(400).json("Config is required!");
-
-  const config = jigDeployConfigSchema.parse(JSON.parse(configString));
-
   try {
-    await docker.getImage(config.name + ":prev").remove();
-  } catch (error) {
-    console.log(error);
-    // Ignore if it's not there
-  }
-  try {
-    await docker
-      .getImage(config.name + ":latest")
-      .tag({ repo: config.name, tag: "prev" });
-  } catch (error) {
-    console.log(error);
-    // Ignore if it's not there
-  }
+    const configString = req.headers["x-jig-config"];
+    if (!configString || typeof configString !== "string")
+      return res.status(400).json("Config is required!");
 
-  try {
+    const config = jigDeployConfigSchema.parse(JSON.parse(configString));
+
+    try {
+      await docker.getImage(config.name + ":prev").remove();
+    } catch (error) {
+      console.log(error);
+      // Ignore if it's not there
+    }
+    try {
+      await docker
+        .getImage(config.name + ":latest")
+        .tag({ repo: config.name, tag: "prev" });
+    } catch (error) {
+      console.log(error);
+      // Ignore if it's not there
+    }
+
     const buildStream = await docker.buildImage(req, {
       t: config.name + ":latest",
       buildargs: config.buildEnv,
@@ -76,14 +76,20 @@ deploymentsRouter.post("/", async (req, res) => {
       rm: true,
     });
 
-    res.json(config.name);
+    res.header("Content-Type", "application/x-ndjson");
 
-    await new Promise((res, rej) => {
+    await new Promise((resolve, rej) => {
       docker.modem.followProgress(
         buildStream,
-        (err, done) => (err ? rej(err) : res(done)),
+        (err, done) => {
+          console.log(err, done);
+          if (done.find((x) => x.error))
+            rej(new Error(done.find((x) => x.error).error));
+          return err ? rej(err) : resolve(done);
+        },
         (progress) => {
-          console.log("PROGRESS:", progress);
+          if (progress.error) return rej(new Error(progress.error));
+          res.write(JSON.stringify(progress) + "\n");
         }
       );
     });
@@ -94,6 +100,7 @@ deploymentsRouter.post("/", async (req, res) => {
       (c) => c.Labels["jig.name"] === config.name,
       true
     );
+    res.write(JSON.stringify({ stream: "Stopped old container" }) + "\n");
     console.log("Deleted old container!!!");
 
     const traiefikRouterName = `traefik.http.routers.${config.name}`;
@@ -139,8 +146,26 @@ deploymentsRouter.post("/", async (req, res) => {
     });
 
     await container.start({});
+    res.write(JSON.stringify({ stream: "Created new container" }));
     console.log("Container started!!!");
+    res.end();
   } catch (error) {
+    if (error instanceof ZodError) {
+      res.status(400).write(
+        JSON.stringify({
+          error:
+            `Errors in config: \n ` +
+            Object.entries(error.flatten().fieldErrors)
+              .map(([field, err]) => `${field}: ${err}`)
+              .join(" \n "),
+        })
+      );
+      return void res.end();
+    }
+    if (error instanceof Error) {
+      res.status(500).write(JSON.stringify({ error: error.message }));
+      return void res.end();
+    }
     console.log("Error: ", error);
   }
 });

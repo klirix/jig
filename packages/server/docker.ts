@@ -6,7 +6,7 @@ export async function stopContainerIfExists(
   predicate: (info: Dockerode.ContainerInfo) => boolean,
   force: boolean = false
 ) {
-  const containers = await docker.listContainers({});
+  const containers = await docker.listContainers({ all: true });
   const traefikContainerInfo = containers.find(predicate);
   if (traefikContainerInfo) {
     const container = docker.getContainer(traefikContainerInfo.Id);
