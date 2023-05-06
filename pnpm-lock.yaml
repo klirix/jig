@@ -14,7 +14,6 @@ importers:
       conf: ^11.0.1
       glob: ^10.2.2
       inquirer: ^9.2.1
-      jig: ^1.0.0
       node-fetch: ^3.3.1
       rollup: ^3.21.5
       tar: ^6.1.14
@@ -25,7 +24,6 @@ importers:
       conf: 11.0.1
       glob: 10.2.2
       inquirer: 9.2.1
-      jig: link:../..
       node-fetch: 3.3.1
       tar: 6.1.14
       yargs: 17.7.2
