@@ -42,6 +42,21 @@ const defaultOptionBuilder = (y) => {
 yargs(hideBin(process.argv))
   .command("init", "Initialize project", NOOP, initHandler)
   .command(
+    "login <loginString>",
+    "Use this command for easy login",
+    NOOP,
+    ({ loginString }) => {
+      const [endpoint, token] = loginString.split("+");
+      if (endpoint && token) {
+        config.set("token", token);
+        config.set("endpoint", `https://` + endpoint);
+        console.log(`${chalk.green`> Successfully logged in, jig on! `}`);
+      } else {
+        console.log(`${chalk.red`> Error: `}That's a weird login string`);
+      }
+    }
+  )
+  .command(
     "endpoint [endpoint]",
     "Set or get endpoint",
     (y) =>

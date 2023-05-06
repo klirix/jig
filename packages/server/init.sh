@@ -20,11 +20,11 @@ docker stop jig > /dev/null && docker rm jig > /dev/null
 docker pull traefik:latest
 
 docker run -d --name jig \
-  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET \
+  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET  -e JIG_DOMAIN=$JIG_DOMAIN \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
   --label "traefik.http.routers.jig.tls=true" \
   --label "traefik.http.routers.jig.tls.certresolver=defaultResolver" \
   --label "traefik.enable=true" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
-echo "Check for a key in the logs: 'docker logs jig'"
+docker exec jig node makeKey.js

@@ -18,7 +18,6 @@ async function main() {
   await initTraefik();
   app.listen(8888, () => {
     console.log("Jig is online, letsssgooooo!!! 🚀🚀🚀");
-    console.log("If you don't have a key use this one: " + makeKey());
   });
 }
 

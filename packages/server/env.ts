@@ -2,6 +2,7 @@ import z from "zod";
 const envSchema = z.object({
   JIG_SSL_EMAIL: z.string().email(),
   JIG_SECRET: z.string(),
+  JIG_DOMAIN: z.string(),
 });
 
 const env = envSchema.parse(process.env);
