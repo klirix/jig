@@ -31,7 +31,7 @@ export const listDeploymentHandler = async ({ ...auth }) => {
     }
   } catch (error) {
     console.log(chalk.red`> Failed to fetch deployments`);
-    if (error instanceof Error) console.log(chalk.red`> ${error.message}`);
+    if (error instanceof Error) console.log(chalk.red(`> ${error.message}`));
   }
 };
 
@@ -43,6 +43,6 @@ export const deleteDeploymentHandler = async ({ name, ...auth }) => {
     console.log(chalk.green`> Successfully removed: ` + name);
   } catch (error) {
     console.log(chalk.red`> Failed to remove: ` + name);
-    if (error instanceof Error) console.log(chalk.red`> ${error.message}`);
+    if (error instanceof Error) console.log(chalk.red(`> ${error.message}`));
   }
 };

@@ -12,15 +12,21 @@ importers:
       chalk:
         specifier: ^5.2.0
         version: 5.2.0
+      cli-progress:
+        specifier: ^3.12.0
+        version: 3.12.0
       conf:
         specifier: ^11.0.1
         version: 11.0.1
+      dockerode:
+        specifier: ^3.3.5
+        version: 3.3.5
       glob:
         specifier: ^10.2.2
         version: 10.2.2
       inquirer:
         specifier: ^9.2.1
-        version: 9.2.1(typescript@5.0.4)
+        version: 9.2.1
       node-fetch:
         specifier: ^3.3.1
         version: 3.3.1
@@ -31,6 +37,9 @@ importers:
         specifier: ^17.7.2
         version: 17.7.2
     devDependencies:
+      '@types/dockerode':
+        specifier: ^3.3.16
+        version: 3.3.17
       '@types/tar':
         specifier: ^6.1.4
         version: 6.1.4
@@ -308,10 +317,8 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
-  /ajv-formats@2.1.1(ajv@8.12.0):
+  /ajv-formats@2.1.1:
     resolution: {integrity: sha512-Wx0Kx52hxE7C18hkMEggYlEifqWZtYaRgouJor+WMdPnQyEK13vgEWyVNup7SoeeoLMsr4kf5h6dOW11I15MUA==}
-    peerDependencies:
-      ajv: ^8.0.0
     peerDependenciesMeta:
       ajv:
         optional: true
@@ -328,11 +335,11 @@ packages:
       uri-js: 4.4.1
     dev: false
 
-  /ansi-escapes@6.2.0(typescript@5.0.4):
+  /ansi-escapes@6.2.0:
     resolution: {integrity: sha512-kzRaCqXnpzWs+3z5ABPQiVke+iq0KXkHo8xiWV4RPTi5Yli0l97BEQuhXV1s7+aSU/fu1kUuxgS4MsQ0fRuygw==}
     engines: {node: '>=14.16'}
     dependencies:
-      type-fest: 3.10.0(typescript@5.0.4)
+      type-fest: 3.10.0
     transitivePeerDependencies:
       - typescript
     dev: false
@@ -582,6 +589,13 @@ packages:
       restore-cursor: 4.0.0
     dev: false
 
+  /cli-progress@3.12.0:
+    resolution: {integrity: sha512-tRkV3HJ1ASwm19THiiLIXLO7Im7wlTuKnvkYaTkyoAPefqjNg7W7DHKUlGRxy9vxDvbyCYQkQozvptuMkGCg8A==}
+    engines: {node: '>=4'}
+    dependencies:
+      string-width: 4.2.3
+    dev: false
+
   /cli-spinners@2.9.0:
     resolution: {integrity: sha512-4/aL9X3Wh0yiMQlE+eeRhWP6vclO3QRtw1JHKIT0FFUs5FjpFmESqtMvYZ0+lbzBw900b95mS0hohy+qn2VK/g==}
     engines: {node: '>=6'}
@@ -633,7 +647,7 @@ packages:
     engines: {node: '>=14.16'}
     dependencies:
       ajv: 8.12.0
-      ajv-formats: 2.1.1(ajv@8.12.0)
+      ajv-formats: 2.1.1
       atomically: 2.0.1
       debounce-fn: 5.1.2
       dot-prop: 7.2.0
@@ -1089,11 +1103,11 @@ packages:
   /inherits@2.0.4:
     resolution: {integrity: sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==}
 
-  /inquirer@9.2.1(typescript@5.0.4):
+  /inquirer@9.2.1:
     resolution: {integrity: sha512-M7LcHl1GcKt8na7NKNvqkiB3btN73+Z5NjhbckpTi9Yr8Ul7sTHXe7cFEudH0WMPcvHfQ4pHjpVOnhaQ4IC4fw==}
     engines: {node: '>=14.18.0'}
     dependencies:
-      ansi-escapes: 6.2.0(typescript@5.0.4)
+      ansi-escapes: 6.2.0
       chalk: 5.2.0
       cli-cursor: 4.0.0
       cli-width: 4.0.0
@@ -1926,13 +1940,11 @@ packages:
     engines: {node: '>=12.20'}
     dev: false
 
-  /type-fest@3.10.0(typescript@5.0.4):
+  /type-fest@3.10.0:
     resolution: {integrity: sha512-hmAPf1datm+gt3c2mvu0sJyhFy6lTkIGf0GzyaZWxRLnabQfPUqg6tF95RPg6sLxKI7nFLGdFxBcf2/7+GXI+A==}
     engines: {node: '>=14.16'}
     peerDependencies:
       typescript: '>=4.7.0'
-    dependencies:
-      typescript: 5.0.4
     dev: false
 
   /type-is@1.6.18:

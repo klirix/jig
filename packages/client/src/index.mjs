@@ -21,12 +21,14 @@ const setTokenHandler = ({ token }) => {
 const getSetEndpointHandler = ({ endpoint }) => {
   if (endpoint) {
     config.set("endpoint", endpoint);
+    console.log(chalk.green`> Successfully set endpoint to ` + endpoint);
   } else {
-    console.log(`Current enpoint is: ${config.get("endpoint")}`);
+    console.log(`> Current enpoint is: ${config.get("endpoint")}`);
   }
 };
 
 const defaultOptionBuilder = (y) => {
+  y.option("verbose", { alias: "v", boolean: true });
   y.option("endpoint", {
     alias: "e",
     string: true,
@@ -89,10 +91,10 @@ yargs(hideBin(process.argv))
         description: "deployment config file",
         default: "./jig.json",
       });
-      y.option("ignore", {
-        alias: "i",
-        string: true,
-        description: "ignore file",
+      y.option("locally", {
+        alias: "l",
+        description: "build locally, upload image",
+        boolean: true,
       });
     },
     deployHandler
