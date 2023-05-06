@@ -88,4 +88,27 @@ yargs(hideBin(process.argv))
       console.log(chalk.red`> Failed to remove: ` + name);
     }
   })
+
+  .command([`$0`, "deploy"], "Delete deployment", NOOP, async ({}) => {
+    if (!isLoggedIn()) return;
+
+    try {
+      const response = await httpClient({
+        method: "get",
+        headers: { Accept: "application/x-ndjson" },
+        url: "/deployments/",
+        responseType: "stream",
+      });
+
+      const stream = response.data;
+
+      stream.on("open", (data) => {
+        console.log(data);
+      });
+
+      console.log(chalk.green`> Successfully deployed: ` + name);
+    } catch (error) {
+      console.log(chalk.red`> Failed to remove: ` + name);
+    }
+  })
   .help().argv;
