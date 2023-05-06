@@ -67,48 +67,104 @@ const listDeploymentHandler = async ({ ...auth }) => {
   }
 };
 
+const defaultOptionBuilder = (y) => {
+  y.option("endpoint", {
+    alias: "e",
+    string: true,
+    description:
+      "override endpoint, default is in config or env variable $JIG_ENDPOINT",
+  });
+  y.option("token", {
+    alias: "t",
+    string: true,
+    description: "override token, default in config or $JIG_TOKEN",
+  });
+};
+
+const deployHandler = async ({ config, ...authOptions }) => {
+  try {
+    const httpClient = makeHttpClient(authOptions);
+    const configPath = config;
+    if (!existsSync(configPath)) {
+      console.log(chalk.red`> Cannot find config at ` + configPath);
+      return;
+    }
+    const configFile = readFileSync(configPath).toString("utf-8");
+
+    let ignorePaths = ["node_modules/**", "."];
+    if (existsSync(".jigignore")) {
+      ignorePaths = readFileSync(".jigignore")
+        .toString("utf-8")
+        .split("\n")
+        .concat(".");
+    }
+
+    const files = await glob("**", { ignore: ignorePaths });
+
+    console.log("> DEBUG: Files: ", files);
+
+    const tarStream = tar.create(
+      {
+        cwd: ".",
+      },
+      files
+    );
+
+    await uploadBuild(httpClient, tarStream, configFile, (progress) => {
+      console.log(`> ` + progress.stream);
+    });
+
+    console.log(chalk.green`> Successfully deployed: ` + config.name);
+  } catch (error) {
+    console.log(chalk.red`> Failed to deploy`);
+  }
+};
+
+const listSecrets = async (authOptions) => {
+  try {
+    const httpClient = makeHttpClient(authOptions);
+
+    const { data: secrets } = await httpClient.get("/secrets");
+
+    if (secrets.length) {
+      console.log(`> Secrets: \n`);
+      console.log(`  ${chalk.grey("name")}`);
+      for (const { key } of secrets) {
+        console.log(`  ${key}`);
+      }
+    } else {
+      console.log(`> No secrets are set yet!`);
+    }
+  } catch (error) {
+    console.log(error);
+  }
+};
+
 yargs(hideBin(process.argv))
   .command("endpoint [endpoint]", "Set endpoint", NOOP, getSetEndpointHandler)
-  .command("token <token>", "Set token", (y) => {}, setTokenHandler)
+  .command("token <token>", "Set token", NOOP, setTokenHandler)
   .command(
     "ls",
     "List deployments",
-    (y) => {
-      y.option("endpoint", {
-        alias: "e",
-        string: true,
-        description:
-          "override endpoint, default is in config or env variable $JIG_ENDPOINT",
-      });
-      y.option("token", {
-        alias: "t",
-        string: true,
-        description: "override token, default in config or $JIG_TOKEN",
-      });
-    },
+    defaultOptionBuilder,
     listDeploymentHandler
   )
-  .command("rm <name>", "Delete deployment", NOOP, deleteDeploymentHandler)
+  .command(
+    "rm <name>",
+    "Delete deployment",
+    defaultOptionBuilder,
+    deleteDeploymentHandler
+  )
   .command(
     [`$0`, "deploy"],
     "Create deployment",
     (y) => {
+      defaultOptionBuilder(y);
       y.option("config", {
         alias: "c",
         string: true,
         description: "deployment config file",
         default: "./jig.json",
-      });
-      y.option("endpoint", {
-        alias: "e",
-        string: true,
-        description:
-          "override endpoint, default is in config or env variable $JIG_ENDPOINT",
-      });
-      y.option("token", {
-        alias: "t",
-        string: true,
-        description: "override token, default in config or $JIG_TOKEN",
       });
       y.option("ignore", {
         alias: "i",
@@ -116,42 +172,59 @@ yargs(hideBin(process.argv))
         description: "ignore file",
       });
     },
-    async ({ config, ...authOptions }) => {
+    deployHandler
+  )
+  .command(
+    `secrets-ls`,
+    "List available secrets",
+    defaultOptionBuilder,
+    listSecrets
+  )
+  .command(
+    `secrets-rm <key>`,
+    "Remove secret",
+    (y) => {
+      defaultOptionBuilder(y);
+      y.positional("key", {
+        description: "Secret reference key",
+      });
+    },
+    async ({ key, ...auth }) => {
       try {
-        const httpClient = makeHttpClient(authOptions);
-        const configPath = config;
-        if (!existsSync(configPath)) {
-          console.log(chalk.red`> Cannot find config at ` + configPath);
-          return;
-        }
-        const configFile = readFileSync(configPath).toString("utf-8");
+        const httpClient = makeHttpClient(auth);
 
-        let ignorePaths = ["node_modules/**", "."];
-        if (existsSync(".jigignore")) {
-          ignorePaths = readFileSync(".jigignore")
-            .toString("utf-8")
-            .split("\n")
-            .concat(".");
-        }
+        const { data: secret } = await httpClient.delete(`/secrets/${key}`);
 
-        const files = await glob("**", { ignore: ignorePaths });
+        console.log(`> Secret ${secret} removed!`);
+      } catch (error) {
+        console.log(error);
+      }
+    }
+  )
+  .command(
+    `secrets-add <key> <value>`,
+    "Add secret value",
+    (y) => {
+      defaultOptionBuilder(y);
+      y.positional("key", {
+        description: "Secret reference key",
+      });
+      y.positional("value", {
+        description: "Secret value",
+      });
+    },
+    async ({ key, value, ...auth }) => {
+      try {
+        const httpClient = makeHttpClient(auth);
 
-        console.log("> DEBUG: Files: ", files);
-
-        const tarStream = tar.create(
-          {
-            cwd: ".",
-          },
-          files
-        );
-
-        await uploadBuild(httpClient, tarStream, configFile, (progress) => {
-          console.log(`> ` + progress.stream);
+        const { data: secret } = await httpClient.put(`/secrets`, {
+          key,
+          value,
         });
 
-        console.log(chalk.green`> Successfully deployed: ` + config.name);
+        console.log(`> Secret ${secret} added!`);
       } catch (error) {
-        console.log(chalk.red`> Failed to deploy`);
+        console.log(error);
       }
     }
   )

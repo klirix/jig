@@ -4,8 +4,8 @@ import axios from "axios";
 export const config = new Conf({ projectName: "jig" });
 
 export const makeHttpClient = ({
-  endpoint = config.get("endpoint"),
-  token = config.get("token"),
+  endpoint = config.get("endpoint") || process.env.JIG_ENDPOINT,
+  token = config.get("token") || process.env.JIG_TOKEN,
 }) => {
   if (!token) {
     throw new Error("You need to login, use token command!");
