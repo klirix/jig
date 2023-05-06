@@ -3,7 +3,6 @@ import { existsSync, readFileSync } from "fs";
 import { glob } from "glob";
 import tar from "tar";
 import chalk from "chalk";
-import { AxiosError } from "axios";
 import { isAxiosError } from "axios";
 
 export const deployHandler = async ({ config, ...authOptions }) => {
