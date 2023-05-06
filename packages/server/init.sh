@@ -18,6 +18,7 @@ fi
 docker stop jig > /dev/null && docker rm jig > /dev/null
 
 docker pull traefik:latest
+docker pull askhatsaiapov/jig:latest
 
 docker run -d --name jig \
   -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET  -e JIG_DOMAIN=$JIG_DOMAIN \
