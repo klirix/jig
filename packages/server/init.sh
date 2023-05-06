@@ -15,7 +15,9 @@ if [[ -z "$JIG_DOMAIN" ]]; then
   read -r JIG_DOMAIN
 fi
 
-docker stop jig && docker rm jig
+docker stop jig > /dev/null && docker rm jig > /dev/null
+
+docker pull traefik:latest
 
 docker run -d --name jig \
   -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET \

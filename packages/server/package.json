@@ -5,7 +5,9 @@
   "main": "index.ts",
   "scripts": {
     "dev": "ts-node-dev index.ts",
-    "start": "ts-node index.ts"
+    "start": "ts-node index.ts",
+    "build-docker": "docker build --rm -t jig .",
+    "publish-docker": "docker tag jig:latest askhatsaiapov/jig:latest && docker push askhatsaiapov/jig:latest"
   },
   "keywords": [],
   "author": "",
