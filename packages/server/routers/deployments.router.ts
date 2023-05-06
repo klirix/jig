@@ -126,7 +126,7 @@ deploymentsRouter.post("/", async (req, res) => {
       Labels: {
         [`${traiefikRouterName}.rule`]: rule,
         [`${traiefikRouterName}.tls`]: "true",
-        [`${traiefikRouterName}.tls.certresolver`]: "defaultResolver",
+        [`${traiefikRouterName}.tls.certresolver`]: "defaultresolver",
         "traefik.enable": "true",
         "jig.name": config.name,
       },

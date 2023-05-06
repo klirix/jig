@@ -18,15 +18,16 @@ export async function initTraefik() {
       "8080/tcp": {},
       "443/tcp": {},
     },
-    Env: [
-      "TRAEFIK_API_INSECURE=true",
-      "TRAEFIK_ENTRYPOINTS_web_ADDRESS=:80",
-      "TRAEFIK_ENTRYPOINTS_websecure_ADDRESS=:443",
-      "TRAEFIK_PROVIDERS_DOCKER=true",
-      "TRAEFIK_PROVIDERS_DOCKER_EXPOSEDBYDEFAULT=false",
-      "TRAEFIK_CERTIFICATESRESOLVERS_defaultResolver_ACME_HTTPCHALLENGE_ENTRYPOINT=web",
-      "TRAEFIK_CERTIFICATESRESOLVERS_defaultResolver_ACME_EMAIL=" +
-        env.JIG_SSL_EMAIL,
+    Cmd: [
+      "--api.insecure=true",
+      "--entrypoints.web.address=:80",
+      "--entrypoints.websecure.address=:443",
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--certificatesresolvers.defaultresolver=true",
+      "--certificatesresolvers.defaultresolver.acme.httpchallenge=true",
+      "--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web",
+      "--certificatesresolvers.defaultresolver.acme.email=" + env.JIG_SSL_EMAIL,
     ],
     HostConfig: {
       RestartPolicy: {
