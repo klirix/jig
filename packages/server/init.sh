@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 if [[ -z "$JIG_SECRET" ]]; then
   echo -n "Enter JIG SECRET: "
@@ -28,5 +28,6 @@ docker run -d --name jig \
   --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
   --label "traefik.enable=true" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
+echo 
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
 docker exec jig node makeKey.js

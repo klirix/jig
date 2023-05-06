@@ -1,15 +1,9 @@
 import express from "express";
 import requireAuth from "../middlewares/requireAuth";
 import z, { ZodError } from "zod";
-import bodyParser from "body-parser";
 import { secrets } from "../dbs";
-import { randomUUID } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { Readable } from "node:stream";
-import tar, { extract } from "tar";
 import { docker, stopContainerIfExists } from "../docker";
-
-const runningDeployments = new Map<string, string>();
+import type { HostRestartPolicy } from "dockerode";
 
 const deploymentsRouter = express.Router();
 
@@ -68,19 +62,20 @@ deploymentsRouter.post("/", async (req, res) => {
       console.log(error);
       // Ignore if it's not there
     }
-
-    const buildStream = await docker.buildImage(req, {
-      t: config.name + ":latest",
-      buildargs: config.buildEnv,
-      dockerfile: "./Dockerfile",
-      rm: true,
-    });
-
     res.header("Content-Type", "application/x-ndjson");
+
+    const progress =
+      req.headers["x-jig-image"] == "true"
+        ? await docker.loadImage(req, { quiet: true })
+        : await docker.buildImage(req, {
+            t: config.name + ":latest",
+            buildargs: config.buildEnv,
+            rm: true,
+          });
 
     await new Promise((resolve, rej) => {
       docker.modem.followProgress(
-        buildStream,
+        progress,
         (err, done) => {
           console.log(err, done);
           if (done.find((x) => x.error))
@@ -93,8 +88,6 @@ deploymentsRouter.post("/", async (req, res) => {
         }
       );
     });
-
-    const restartTimes = config.restartPolicy?.match(/(:\d{1,3})/)?.[0];
 
     await stopContainerIfExists(
       (c) => c.Labels["jig.name"] === config.name,
@@ -120,6 +113,21 @@ deploymentsRouter.post("/", async (req, res) => {
         break;
     }
 
+    let restartPolicy: HostRestartPolicy | undefined = undefined;
+    if (config.restartPolicy) {
+      if (config.restartPolicy.includes(":")) {
+        const [name, num] = config.restartPolicy.split(":");
+        restartPolicy = {
+          Name: name,
+          MaximumRetryCount: Number.parseInt(num),
+        };
+      } else {
+        restartPolicy = {
+          Name: config.restartPolicy,
+        };
+      }
+    }
+
     const container = await docker.createContainer({
       Image: config.name,
       ExposedPorts: { [config.port.toString() + `/tcp`]: {} },
@@ -132,17 +140,7 @@ deploymentsRouter.post("/", async (req, res) => {
       },
       Env: Object.entries(config.env).map(([key, val]) => key + "=" + val),
       name: config.name,
-
-      HostConfig: config.restartPolicy
-        ? {
-            RestartPolicy: {
-              Name: config.restartPolicy,
-              MaximumRetryCount: restartTimes
-                ? Number.parseInt(restartTimes.replace(":", ""))
-                : undefined,
-            },
-          }
-        : undefined,
+      HostConfig: restartPolicy ? { RestartPolicy: restartPolicy } : undefined,
     });
 
     await container.start({});
@@ -172,7 +170,7 @@ deploymentsRouter.post("/", async (req, res) => {
 
 deploymentsRouter.get("/", async (req, res) => {
   // res.json(Array.from(stripValues(secrets.values())));
-  const containers = await docker.listContainers();
+  const containers = await docker.listContainers({ all: true });
   const deployments = containers
     .filter((c) => !!c.Labels["jig.name"])
     .map((c) => ({
