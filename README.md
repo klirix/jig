@@ -27,9 +27,8 @@ Login command will look something like `jig login loooooong+code` keep it for la
 
 Any node package manager is a prerequisite
 
-```
-pnpm install -g jig-client
-jig login <login code you received in previous step>
+```bash
+npm install -g jig-client
 ```
 
-After that you should be ready to deploy
+After that plug in the `jig login ...` command you received server side and you should be ready to go
