@@ -133,8 +133,9 @@ deploymentsRouter.post("/", async (req, res) => {
       ExposedPorts: { [config.port.toString() + `/tcp`]: {} },
       Labels: {
         [`${traiefikRouterName}.rule`]: rule,
-        [`${traiefikRouterName}.middlewares`]: "https-only",
+        // [`${traiefikRouterName}.middlewares`]: "https-only",
         [`${traiefikRouterName}.tls.certresolver`]: "defaultresolver",
+        [`${traiefikRouterName}.entrypoints`]: "websecure",
         "traefik.enable": "true",
         "jig.name": config.name,
       },
