@@ -23,12 +23,13 @@ docker pull askhatsaiapov/jig:latest
 
 docker run -d --name jig \
   -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET  -e JIG_DOMAIN=$JIG_DOMAIN \
+  --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
+  --label "traefik.http.middlewares.https-only.redirectscheme.permanent=true" \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
   --label "traefik.http.routers.jig.tls=true" \
-  --label "traefik.http.routers.jig.middlewares=https-only" \
+  --label "traefik.http.routers.jig.middlewares=https-only@docker" \
   --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
   --label "traefik.enable=true" \
-  --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
 echo 
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
