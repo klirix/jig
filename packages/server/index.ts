@@ -5,7 +5,7 @@ import eWS from "@wll8/express-ws";
 import { initTraefik } from "./lib/initTraefik";
 import secretsRouter from "./routers/secrets.router";
 import deploymentsRouter from "./routers/deployments.router";
-import { makeKey } from "./middlewares/requireAuth";
+import { get } from "http";
 
 const { app } = eWS(express());
 
@@ -13,6 +13,12 @@ app.use(requestLog("dev"));
 
 app.use("/secrets", secretsRouter);
 app.use("/deployments", deploymentsRouter);
+
+app.get("/", (req, res) => {
+  get("https://getjig.askh.at", (r) => {
+    r.pipe(res);
+  });
+});
 
 async function main() {
   await initTraefik();

@@ -28,12 +28,13 @@ export async function initTraefik() {
       "--certificatesresolvers.defaultresolver.acme.httpchallenge=true",
       "--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web",
       "--certificatesresolvers.defaultresolver.acme.email=" + env.JIG_SSL_EMAIL,
+      "--certificatesresolvers.defaultresolver.acme.storage=/shared/acme.json",
     ],
     HostConfig: {
       RestartPolicy: {
         Name: "unless-stopped",
       },
-      Binds: ["/var/run/docker.sock:/var/run/docker.sock"],
+      Binds: ["/var/run/docker.sock:/var/run/docker.sock", "./shared:/shared"],
       PortBindings: {
         "80/tcp": [{ HostPort: "80" }],
         "8080/tcp": [{ HostPort: "8080" }],
