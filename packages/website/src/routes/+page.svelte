@@ -84,6 +84,24 @@
 					>ensure docker is available and running on your server</a
 				>
 			</p>
+			<p>
+				DNS management is not builtin just yet so you need to point domain names you wish to use
+				with Jig manually. 😔
+			</p>
+			<p>
+				Thankfully it's mostly a one-time thing and you won't need to deal with it later. With
+				Vercel domains it's as easy as an example below, but it depends on your provider
+			</p>
+			<CodeBlock
+				language="bash"
+				code="vc dns add <your base domain> <sub domain> A <your server public IP>"
+			/>
+			<p>
+				As a last infra part you'll need to open up ports 80 (http) and 443 (https). Traefik handles
+				https redirection and Let's Encrypt http challenges so you don't need to worry about
+				unsecured connections
+			</p>
+			<p>Load and run startup\update script below</p>
 			<div class="my-5">
 				<CodeBlock
 					language="bash"
