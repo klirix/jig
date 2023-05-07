@@ -2,6 +2,6 @@
   "name": "jig-website",
   "port": 3000,
   "restartPolicy": "on-failure:2",
-  "domain": "getjig.askh.at",
+  "domain": "deploywithjig.askh.at",
   "envs": {}
 }

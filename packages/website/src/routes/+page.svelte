@@ -11,7 +11,9 @@
 </svelte:head>
 
 <main class="w-full bg-gray-100 dark:bg-gray-900">
-	<section class="bg-white dark:bg-gray-800 mx-auto container lg:max-w-4xl py-52 px-28 shadow-lg">
+	<section
+		class="bg-white dark:bg-gray-800 mx-auto container lg:max-w-4xl py-52 px-4 md:px-28 shadow-lg"
+	>
 		<div class="pb-20">
 			<h1
 				class="unstyled text-9xl leading-snug pb-3 font-semibold text-gray-900 dark:text-gray-100"
@@ -23,7 +25,7 @@
 				a device that holds a piece of work and guides the tool operating on it.
 			</p>
 		</div>
-		<div class="text-xl text-gray-800 dark:text-gray-200">
+		<div class="px-2 md:px-0 text-xl text-gray-800 dark:text-gray-200">
 			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">What is Jig?</h3>
 			<hr class=" mb-10" />
 			<p>
@@ -50,13 +52,15 @@
 				</li>
 			</ul>
 			<p>
-				Jig was heavily inspired by <a href="https://vercel.com">Zeit (older version of Vercel)</a>
+				Jig was heavily inspired by <a class=" underline" href="https://vercel.com"
+					>Zeit (older version of Vercel)</a
+				>
 				and
-				<a href="https://github.com/exoframejs/exoframe">Exoframe.js</a> with focus on self-hosting and
-				being minimal whenever this is possible.
+				<a class=" underline" href="https://github.com/exoframejs/exoframe">Exoframe.js</a> with focus
+				on self-hosting and being minimal whenever this is possible.
 			</p>
 		</div>
-		<div class="mt-10 text-xl text-gray-800 dark:text-gray-200">
+		<div class="px-2 md:px-0 mt-10 text-xl text-gray-800 dark:text-gray-200">
 			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Installation</h3>
 			<hr class=" mb-10" />
 			<p>Installation is in two steps:</p>
@@ -71,7 +75,7 @@
 				</li>
 			</ul>
 		</div>
-		<div class="mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
+		<div class="px-2 md:px-0 mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
 			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Server setup</h3>
 			<p>
 				Docker is a prerequisite, so&nbsp;<a
@@ -96,7 +100,7 @@
 				> keep it for later
 			</p>
 		</div>
-		<div class="mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
+		<div class="px-2 md:px-0 mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
 			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Client setup</h3>
 			<p>Any node package manager is a prerequisite</p>
 			<div class="my-5" />
