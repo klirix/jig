@@ -79,6 +79,7 @@ export const initHandler = async () => {
     ).addMore;
   }
   writeFileSync("jig.json", JSON.stringify({ ...configParts, envs }, null, 2));
+  detectProjectType();
 };
 
 async function detectProjectType() {
@@ -93,7 +94,7 @@ async function detectProjectType() {
           name: "addDockerfile",
         });
         if (addDockerfile) {
-          writeFileSync("Dockerfile", svelteDockerfileTxt);
+          writeFileSync("Dockerfile", svelteDockerfileTxt());
         }
       }
       break;
@@ -107,7 +108,7 @@ async function detectProjectType() {
           name: "addDockerfile",
         });
         if (addDockerfile) {
-          writeFileSync("Dockerfile", svelteDockerfileTxt);
+          writeFileSync("Dockerfile", nextDockerfile());
         }
       }
       break;
@@ -145,8 +146,7 @@ async function detectProjectType() {
 }
 
 const nodeDockerfile = (port = 3000) =>
-  ```
-from node:alpine as base
+  `from node:alpine as base
 
 # -- BUILDER
 
@@ -158,10 +158,10 @@ copy . .
 run yarn build
 expose ${port}
 cmd ["yarn", "start"]
-```;
+`;
 
-const svelteDockerfileTxt = ```
-from node:alpine as base
+const svelteDockerfileTxt = () =>
+  `FROM node:alpine as base
 
 # -- BUILDER
 
@@ -188,10 +188,10 @@ copy --from=builder /app/build build
 copy --from=deps /app/node_modules node_modules
 expose 3000
 cmd ["node", "build"]
-```;
+`;
 
-const nextDockerfile = ```
-FROM node:18-alpine as base
+const nextDockerfile = () =>
+  `FROM node:18-alpine as base
 
 FROM base AS deps
 RUN apk add --no-cache libc6-compat
@@ -229,4 +229,4 @@ EXPOSE 3000
 ENV PORT 3000
 
 CMD ["yarn", "start"]
-```;
+`;
