@@ -6,5 +6,5 @@ export interface Secret {
 }
 
 export const secrets = new PersistableMap<Secret["key"], Secret>(
-  "secrets.json"
+  "/var/jig/secrets.json"
 );
