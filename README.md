@@ -1,8 +1,8 @@
 # Jig — Dead simple deployment tool
 
-_noun_
+noun
 
-&nbsp; a device that holds a piece of work and guides the tool operating on it.
+&nbsp; _a device that holds a piece of work and guides the tool operating on it._
 
 ## Installation
 
