@@ -31,6 +31,12 @@ Any node package manager is a prerequisite
 npm install -g jig-client
 ```
 
+Plug in your login command you got in previous steps with
+
+```bash
+jig login <loooooong+code>
+```
+
 Then initiate a project and create a config in your project directory with
 
 ```bash
