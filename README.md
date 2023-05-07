@@ -38,4 +38,5 @@ After that plug in the `jig login ...` command you received server side and you 
 - [] Manage multiple servers 🌿
 - [] Check docker container resource consumption 💸
 - [] Fetch container logs (forgor to implement 💀), maybe attahcing to the container even 🤔
+- [] Deployment rollbacks?
 - [] DNS management (? maybe)

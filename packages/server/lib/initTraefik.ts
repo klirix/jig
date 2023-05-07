@@ -29,6 +29,9 @@ export async function initTraefik() {
       "--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web",
       "--certificatesresolvers.defaultresolver.acme.email=" + env.JIG_SSL_EMAIL,
     ],
+    Labels: {
+      "--traefik.http.middlewares.https-only.redirectscheme.scheme": "https",
+    },
     HostConfig: {
       RestartPolicy: {
         Name: "unless-stopped",
