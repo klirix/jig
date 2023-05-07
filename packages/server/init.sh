@@ -21,14 +21,14 @@ docker rm jig
 docker pull traefik:latest
 docker pull askhatsaiapov/jig:latest
 
+  # --label "traefik.http.routers.jig.tls=true" \
+  # --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
 docker run -d --name jig \
   -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET  -e JIG_DOMAIN=$JIG_DOMAIN \
   --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
   --label "traefik.http.middlewares.https-only.redirectscheme.permanent=true" \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
-  --label "traefik.http.routers.jig.tls=true" \
   --label "traefik.http.routers.jig.middlewares=https-only" \
-  --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
   --label "traefik.enable=true" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
 echo 
