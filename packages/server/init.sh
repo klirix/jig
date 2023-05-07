@@ -28,6 +28,7 @@ docker run -d --name jig \
   --label "traefik.http.routers.jig.middlewares=https-only" \
   --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
   --label "traefik.enable=true" \
+  --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
 echo 
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
