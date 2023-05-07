@@ -133,7 +133,7 @@ deploymentsRouter.post("/", async (req, res) => {
       ExposedPorts: { [config.port.toString() + `/tcp`]: {} },
       Labels: {
         [`${traiefikRouterName}.rule`]: rule,
-        [`${traiefikRouterName}.tls`]: "true",
+        // [`${traiefikRouterName}.tls`]: "true",
         [`${traiefikRouterName}.tls.certresolver`]: "defaultresolver",
         "traefik.enable": "true",
         "jig.name": config.name,
