@@ -27,7 +27,7 @@ docker run -d --name jig \
   --label "traefik.http.middlewares.https-only.redirectscheme.permanent=true" \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
   --label "traefik.http.routers.jig.tls=true" \
-  --label "traefik.http.routers.jig.middlewares=https-only@docker" \
+  --label "traefik.http.routers.jig.middlewares=https-only" \
   --label "traefik.http.routers.jig.tls.certresolver=defaultresolver" \
   --label "traefik.enable=true" \
   -v /var/run/docker.sock:/var/run/docker.sock askhatsaiapov/jig:latest
