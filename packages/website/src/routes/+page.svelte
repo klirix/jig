@@ -87,7 +87,7 @@
 			<div class="my-5">
 				<CodeBlock
 					language="bash"
-					code="wget -q https://getjig.askh.at/install.sh && bash install.sh && rm install.sh"
+					code="wget -q https://deploywithjig.askh.at/install.sh && bash install.sh && rm install.sh"
 				/>
 			</div>
 			<p class="">
