@@ -32,3 +32,10 @@ npm install -g jig-client
 ```
 
 After that plug in the `jig login ...` command you received server side and you should be ready to go
+
+### TODOs
+
+- [] Manage multiple servers 🌿
+- [] Check docker container resource consumption 💸
+- [] Fetch container logs (forgor to implement 💀), maybe attahcing to the container even 🤔
+- [] DNS management (? maybe)
