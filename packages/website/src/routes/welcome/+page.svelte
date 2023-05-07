@@ -42,8 +42,12 @@
 			</TabGroup>
 			<p>Initiate jig project and create the config</p>
 			<CodeBlock language="bash" code="jig init" />
+			<p>
+				It will try to figure out what kind of project you're running and add a pre-made
+				<code>Dockerfile</code> for your convenience, but you can create one yourself
+			</p>
 			<p>And deploy when you're ready</p>
-			<CodeBlock language="bash" code="jig init" />
+			<CodeBlock language="bash" code="jig deploy" />
 			<p>That's it!</p>
 		</div>
 	</section>

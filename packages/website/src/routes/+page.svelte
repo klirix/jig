@@ -141,5 +141,17 @@
 				After that just plug in the command you received in Server setup stage and start deploying
 			</p>
 		</div>
+		<div class=" space-y-4 px-2 md:px-0 text-xl text-gray-800 dark:text-gray-200">
+			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Start deploying</h3>
+			<hr class=" mb-10" />
+			<p>Initiate jig project and create the config</p>
+			<CodeBlock language="bash" code="jig init" />
+			<p>
+				It will try to figure out what kind of project you're running and add a pre-made
+				<code>Dockerfile</code> for your convenience, but you can create one yourself
+			</p>
+			<CodeBlock language="bash" code="jig deploy" />
+			<p>That's it!</p>
+		</div>
 	</section>
 </main>

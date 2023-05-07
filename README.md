@@ -31,7 +31,19 @@ Any node package manager is a prerequisite
 npm install -g jig-client
 ```
 
-After that plug in the `jig login ...` command you received server side and you should be ready to go
+Then initiate a project and create a config in your project directory with
+
+```bash
+jig init
+```
+
+It will try to figure out what kind of project you're running and add a pre-made `Dockerfile` for your convenience, but you can create one yourself
+
+After that plug in the `jig login ...` command you received server side and you should be ready to go with
+
+```bash
+jig deploy
+```
 
 ### TODOs
 
