@@ -195,4 +195,20 @@ deploymentsRouter.delete("/:name", async (req, res) => {
   res.json(name);
 });
 
+deploymentsRouter.get("/:name/logs", async (req, res) => {
+  const { name } = req.params;
+
+  await stopContainerIfExists((c) => c.Labels["jig.name"] === name);
+  const containerInfo = (await docker.listContainers({ all: true })).find(
+    (x) => x.Labels["jig.name"] == name
+  );
+  if (!containerInfo) return void res.sendStatus(404);
+  const containerLogBuffer = await docker.getContainer(containerInfo.Id).logs();
+  const logs = containerLogBuffer
+    .toString("utf-8")
+    .split(`\n`)
+    .map((stream) => ({ stream }));
+  res.json(logs);
+});
+
 export default deploymentsRouter;
