@@ -5,6 +5,7 @@ import eWS from "@wll8/express-ws";
 import { initTraefik } from "./lib/initTraefik";
 import secretsRouter from "./routers/secrets.router";
 import deploymentsRouter from "./routers/deployments.router";
+import instanceRouter from "./routers/instance.router";
 
 const { app } = eWS(express());
 
@@ -12,6 +13,7 @@ app.use(requestLog("dev"));
 
 app.use("/secrets", secretsRouter);
 app.use("/deployments", deploymentsRouter);
+app.use("/instance", instanceRouter);
 
 app.get("/", (req, res) => {
   res.redirect(`https://deploywithjig.askh.at/welcome`);
