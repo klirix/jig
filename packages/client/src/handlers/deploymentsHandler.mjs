@@ -11,7 +11,6 @@ const maxLengthForFields = (fields) => {
     const result = {};
     for (const obj of objList) {
       for (const field of fields) {
-        console.log(obj[field]);
         if (obj[field].length > (result[field] || 0))
           result[field] = obj[field].length;
       }
@@ -79,8 +78,6 @@ function printStats(stats) {
       cpuPercentage: "CPU usage percentage",
     },
   ]);
-
-  console.log(lens);
 
   console.log(`> Current resource usage\n`);
   console.log(
