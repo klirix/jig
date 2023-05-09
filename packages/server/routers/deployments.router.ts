@@ -205,7 +205,6 @@ deploymentsRouter.get("/:name/logs", async (req, res) => {
   const containerLogBuffer = await docker
     .getContainer(containerInfo.Id)
     .logs({ follow: false, stdout: true });
-  console.log(containerLogBuffer);
   const logs = containerLogBuffer
     .toString("utf-8")
     .split(`\n`)
