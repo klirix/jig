@@ -106,7 +106,8 @@ export const deployHandler = async ({ config, locally, ...authOptions }) => {
       });
     } else {
       await uploadBuild(httpClient, tarStream, configFile, (progress) => {
-        console.log(`> ` + progress.stream.replace("\n", ""));
+        if (progress.stream)
+          console.log(`> ` + progress.stream.replace("\n", ""));
       });
     }
 

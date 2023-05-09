@@ -10,6 +10,8 @@ import {
   addSecretHandler,
   removeSecretHanlder,
   deleteDeploymentHandler,
+  getDeploymentLogsHandler,
+  checkResourceUsage,
 } from "./handlers/index.mjs";
 
 const NOOP = () => {};
@@ -75,10 +77,22 @@ yargs(hideBin(process.argv))
     listDeploymentHandler
   )
   .command(
+    "stats",
+    "Check resource usage",
+    defaultOptionBuilder,
+    checkResourceUsage
+  )
+  .command(
     "rm <name>",
     "Delete deployment",
     defaultOptionBuilder,
     deleteDeploymentHandler
+  )
+  .command(
+    `logs <name>`,
+    "Get deployment logs",
+    defaultOptionBuilder,
+    getDeploymentLogsHandler
   )
   .command(
     [`$0`, "deploy"],
