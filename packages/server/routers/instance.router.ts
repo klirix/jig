@@ -20,7 +20,7 @@ instanceRouter.get("/stats", async (_, res) => {
           .stats({ "one-shot": true, stream: false });
         const usedMemory =
           containerStats.memory_stats.usage -
-          containerStats.memory_stats.stats.cache;
+          (containerStats.memory_stats.stats.cache || 0);
 
         const cpuD =
           containerStats.cpu_stats.cpu_usage.total_usage -
@@ -33,10 +33,9 @@ instanceRouter.get("/stats", async (_, res) => {
         const cpuNum = containerStats.cpu_stats.online_cpus;
 
         console.log(
-          cpuD,
-          containerStats.cpu_stats.system_cpu_usage,
-          containerStats.precpu_stats,
-          cpuNum
+          containerStats.memory_stats.usage,
+          containerStats.memory_stats.stats,
+          containerStats.memory_stats.limit
         );
 
         return {
