@@ -53,8 +53,8 @@ jig deploy
 
 ### TODOs
 
-- [] Manage multiple servers 🌿
+- [ ] Manage multiple servers 🌿
 - [x] Check docker container resource consumption 💸
 - [x] Fetch container logs (forgor to implement 💀), maybe attahcing to the container even 🤔
-- [] Deployment rollbacks?
-- [] DNS management (? maybe)
+- [ ] Deployment rollbacks?
+- [ ] DNS management (? maybe)
