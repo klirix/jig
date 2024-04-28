@@ -2,21 +2,25 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 
-	secret_db "askh.at/jig/v2/pkgs/secrets"
 	"askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/mattn/go-sqlite3"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/urfave/cli/v2"
 )
 
 func ensureTraefikRunning(cli *client.Client) error {
@@ -36,12 +40,9 @@ func ensureTraefikRunning(cli *client.Client) error {
 			}
 
 		}
-		println(container.Names[0], container.State)
 	}
 	if containerId != "" {
-		println("Container exists")
 		if !isRunning {
-			println("Container exists but is not running")
 			if err := cli.ContainerStart(context.Background(), containerId, container.StartOptions{}); err != nil {
 				println("Failed to restart contnainer, removing...", err.Error())
 				cli.ContainerRemove(context.Background(), containerId, container.RemoveOptions{})
@@ -91,6 +92,60 @@ func ensureTraefikRunning(cli *client.Client) error {
 }
 
 func main() {
+	app := &cli.App{
+		Name:  "Jig",
+		Usage: "Deployment Docker wtapper",
+		Action: func(c *cli.Context) error {
+			serve()
+			return nil
+		},
+		Commands: []*cli.Command{
+
+			{
+				Name:  "makeKey",
+				Usage: "Generate a new JWT secret key",
+				Args:  true,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:    "short",
+						Aliases: []string{"s"},
+						Value:   false,
+						Usage:   "Short output",
+					},
+				},
+				Action: func(ctx *cli.Context) error {
+					// Create the Claims
+					claims := &jwt.RegisteredClaims{
+						Issuer:  "jig",
+						Subject: "admin",
+					}
+
+					token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+					token.Header["alg"] = "HS256"
+					ss, err := token.SignedString([]byte(jwtSecretKey))
+
+					if err != nil {
+						return err
+					}
+
+					if ctx.Bool("short") {
+						print(ss)
+					} else {
+						println("Your new jwt secret key ✨🔑:")
+						println(ss)
+					}
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := app.Run(os.Args); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func serve() {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		print("Failed to connect to docker daemon")
@@ -102,14 +157,125 @@ func main() {
 		panic(err)
 	}
 
-	if err := secret_db.Init(); err != nil {
+	secretDb, err := InitSecrets()
+	if err != nil {
 		println("Failed to initialize secret_db")
 		panic(err)
 	}
-	defer secret_db.Close()
+	defer secretDb.Close()
+
+	print("Listening on 8080")
+	http.Handle("/deployments", deploymentsRouter(*cli, secretDb))
+	http.Handle("/secrets", secretRouter(secretDb))
+	http.ListenAndServe("0.0.0.0:8080", nil)
+}
+
+func secretRouter(secret_db *Secrets) *http.ServeMux {
 	r := http.NewServeMux()
 
+	r.HandleFunc("POST /secrets", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		var body types.NewSecretBody
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := secret_db.Insert(body.Name, body.Value); err != nil {
+			println("Failed to insert secret", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	})
+
+	r.HandleFunc("DELETE /secrets/{name}/", func(w http.ResponseWriter, r *http.Request) {
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		name := r.PathValue("name")
+
+		err := secret_db.Delete(name)
+		if err != nil {
+			println("Failed to delete secret", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
+	})
+
+	r.HandleFunc("GET /secrets", func(w http.ResponseWriter, r *http.Request) {
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		secrets, err := secret_db.List()
+
+		if err != nil {
+			println("Failed to list secrets", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		secretList := types.SecretList{Secrets: secrets}
+
+		secretsJson, err := json.Marshal(secretList)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(secretsJson)
+	})
+
+	r.HandleFunc("GET /secrets/{name}/", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
+		name := r.PathValue("name")
+		secret, err := secret_db.Get(name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var secretList types.SecretInspect = types.SecretInspect{Value: secret}
+
+		secretJson, err := json.Marshal(secretList)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(secretJson)
+	})
+
+	return r
+}
+
+func deploymentsRouter(cli client.Client, secretDb *Secrets) *http.ServeMux {
+	r := http.NewServeMux()
 	r.HandleFunc("GET /deployments", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
 		containers, err := cli.ContainerList(context.Background(), container.ListOptions{
 			All: true,
 		})
@@ -144,6 +310,11 @@ func main() {
 	})
 
 	r.HandleFunc("POST /deployments", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 
 		// Get config from header
 		configString := r.Header.Get("x-jig-config")
@@ -211,6 +382,15 @@ func main() {
 
 		envs := []string{}
 		for key, value := range config.Envs {
+			if value[0] == '@' {
+				secretValue, err := secretDb.Get(value[1:])
+				if err != nil {
+					println("Failed to get secret value", err.Error())
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				value = secretValue
+			}
 			envs = append(envs, key+"="+value)
 		}
 
@@ -238,6 +418,12 @@ func main() {
 	})
 
 	r.HandleFunc("DELETE /deployments/{name}", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
 		name := r.PathValue("name")
 		containers, err := cli.ContainerList(context.Background(), container.ListOptions{
 			All: true,
@@ -259,6 +445,12 @@ func main() {
 	})
 
 	r.HandleFunc("GET /deployments/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+
+		if err := ensureAuth(r); err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+
 		name := r.PathValue("name")
 		containers, err := cli.ContainerList(context.Background(), container.ListOptions{
 			All: true,
@@ -287,60 +479,112 @@ func main() {
 		http.Error(w, "Container not found", http.StatusNotFound)
 	})
 
-	r.HandleFunc("POST /secrets", func(w http.ResponseWriter, r *http.Request) {
-		var body types.NewSecretBody
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if err := secret_db.Insert(body.Name, body.Value); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+	return r
+}
 
-		w.WriteHeader(http.StatusCreated)
+func ensureAuth(req *http.Request) error {
+	parts := strings.Split(req.Header.Get("Authorization"), " ")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid Authorization header")
+	}
+
+	if parts[0] != "Bearer" {
+		return fmt.Errorf("invalid Authorization header")
+	}
+
+	tokenString := parts[1]
+
+	claims := &jwt.RegisteredClaims{}
+
+	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return []byte(jwtSecretKey), nil
 	})
 
-	r.HandleFunc("GET /secrets", func(w http.ResponseWriter, r *http.Request) {
-		secrets, err := secret_db.List()
+	if err != nil {
+		println("Failed to parse token", err.Error())
+		return err
+	}
+
+	if !token.Valid {
+		return fmt.Errorf("invalid token")
+	}
+
+	return nil
+}
+
+var jwtSecretKey = os.Getenv("JIG_SECRET")
+
+func InitSecrets() (*Secrets, error) {
+	println("db.go initialized")
+	if _, err := os.Stat("./secrets.db"); errors.Is(err, os.ErrNotExist) {
+		_, err := os.Create("./secrets.db")
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			println("Failed to create db file", err.Error())
+			return nil, err
 		}
+	}
+	newDb, err := sql.Open("sqlite3", "./secrets.db")
+	if err != nil {
+		return nil, err
+	}
+	_, err = newDb.Exec("CREATE TABLE IF NOT EXISTS secrets (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
+	if err != nil {
+		return nil, err
+	}
+	return &Secrets{db: newDb}, nil
+}
 
-		secretList := types.SecretList{Secrets: secrets}
+type Secrets struct {
+	db *sql.DB
+}
 
-		secretsJson, err := json.Marshal(secretList)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+func (secrets *Secrets) Insert(name, value string) error {
+	_, err := secrets.db.Exec("INSERT INTO secrets (name, value) VALUES (?, ?)", name, value)
+	return err
+}
+
+func (secrets *Secrets) Get(name string) (string, error) {
+	var value string
+	err := secrets.db.QueryRow("SELECT value FROM secrets WHERE name = ?", name).Scan(&value)
+	return value, err
+}
+
+func (secrets *Secrets) GetValue(name string) (string, error) {
+	var value string
+	err := secrets.db.QueryRow("SELECT value FROM secrets WHERE name = ?", name).Scan(&value)
+	return value, err
+}
+
+func (secrets *Secrets) Update(name, value string) error {
+	_, err := secrets.db.Exec("UPDATE secrets SET value = ? WHERE name = ?", value, name)
+	return err
+}
+
+func (secrets *Secrets) Delete(name string) error {
+	_, err := secrets.db.Exec("DELETE FROM secrets WHERE name = ?", name)
+	return err
+}
+
+func (secrets *Secrets) List() ([]string, error) {
+	rows, err := secrets.db.Query("SELECT name FROM secrets")
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return []string{}, nil
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(secretsJson)
-	})
-
-	r.HandleFunc("GET /secrets/{name}/inspect", func(w http.ResponseWriter, r *http.Request) {
-		name := r.PathValue("name")
-		secret, err := secret_db.Get(name)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
 		}
+		names = append(names, name)
+	}
+	return names, nil
+}
 
-		var secretList types.SecretInspect = types.SecretInspect{Value: secret}
-
-		secretJson, err := json.Marshal(secretList)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(secretJson)
-	})
-
-	print("Listening on 8080")
-	http.Handle("/", r)
-	http.ListenAndServe("0.0.0.0:8080", nil)
+func (secrets *Secrets) Close() error {
+	return secrets.db.Close()
 }
