@@ -98,7 +98,7 @@ deploymentsRouter.post("/", async (req, res) => {
 
     const traiefikRouterName = `traefik.http.routers.${config.name}`;
 
-    let rule: string;
+    let rule: string | undefined = undefined;
     switch (true) {
       case config.rule != undefined:
         rule = config.rule as string;
@@ -106,10 +106,6 @@ deploymentsRouter.post("/", async (req, res) => {
 
       case !!config.domain:
         rule = `Host(\`${config.domain}\`)`;
-        break;
-
-      default:
-        rule = "No-HTTP";
         break;
     }
 
@@ -132,15 +128,21 @@ deploymentsRouter.post("/", async (req, res) => {
       Image: config.name,
       ExposedPorts: { [config.port.toString() + `/tcp`]: {} },
       Labels: {
-        [`${traiefikRouterName}.rule`]: rule,
-        [`${traiefikRouterName}.middlewares`]: "https-only",
-        [`${traiefikRouterName}.entrypoints`]: "web",
-        [`${traiefikRouterName}-secure.rule`]: rule,
-        // [`${traiefikRouterName}.middlewares`]: "https-only",
-        [`${traiefikRouterName}-secure.tls.certresolver`]: "defaultresolver",
-        [`${traiefikRouterName}-secure.tls`]: "true",
-        [`${traiefikRouterName}-secure.entrypoints`]: "websecure",
-        "traefik.enable": "true",
+        ...(rule
+          ? {
+              [`${traiefikRouterName}.rule`]: rule,
+              [`${traiefikRouterName}.middlewares`]: "https-only",
+              [`${traiefikRouterName}.entrypoints`]: "web",
+              [`${traiefikRouterName}-secure.rule`]: rule,
+              [`${traiefikRouterName}-secure.tls.certresolver`]:
+                "defaultresolver",
+              [`${traiefikRouterName}-secure.tls`]: "true",
+              [`${traiefikRouterName}-secure.entrypoints`]: "websecure",
+              "traefik.enable": "true",
+            }
+          : {
+              "jig.nohttp": "true",
+            }),
         "jig.name": config.name,
       },
       Env: Object.entries(config.env).map(([key, val]) => key + "=" + val),

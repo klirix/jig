@@ -1,6 +1,6 @@
 module askh.at/jig/v2
 
-go 1.20
+go 1.22
 
 require (
 	github.com/Microsoft/go-winio v0.4.14 // indirect
@@ -12,7 +12,6 @@ require (
 	github.com/go-logr/logr v1.4.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
-	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/mattn/go-sqlite3 v1.14.22 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0 // indirect
