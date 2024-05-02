@@ -144,7 +144,7 @@ func main() {
 
 							name := ctx.Args().Get(0)
 
-							req, _ := createRequest("GET", "/secrets/"+name+"/")
+							req, _ := createRequest("GET", "/secrets/"+name)
 
 							resp, err := httpClient.Do(req)
 							if err != nil {
@@ -153,6 +153,12 @@ func main() {
 							if resp.StatusCode != 204 {
 								log.Fatal("Error reading secret: ", resp.Status)
 							}
+
+							var secret types.SecretInspect
+
+							bodyRes, err := io.ReadAll(resp.Body)
+
+							json.Unmarshal(bodyRes, &secret)
 
 							println(io.ReadAll(resp.Body))
 							return nil
@@ -197,7 +203,7 @@ func main() {
 
 							name := ctx.Args().Get(0)
 
-							req, _ := createRequest("DELETE", "/secrets/"+name+"/")
+							req, _ := createRequest("DELETE", "/secrets/"+name)
 
 							resp, err := httpClient.Do(req)
 							println(req.Method, req.URL.String())

@@ -11,13 +11,16 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"askh.at/jig/v2/pkgs/types"
+	imageTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/mux"
 	_ "github.com/mattn/go-sqlite3"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/urfave/cli/v2"
@@ -41,6 +44,24 @@ func ensureTraefikRunning(cli *client.Client) error {
 
 		}
 	}
+	imageList, err := cli.ImageList(context.Background(), imageTypes.ImageListOptions{})
+	if err != nil {
+		println("Failed to list images", err.Error())
+		return err
+	}
+	hasTraefikImage := false
+	for _, image := range imageList {
+		if strings.Contains(image.RepoTags[0], "traefik") {
+			hasTraefikImage = true
+		}
+	}
+	if !hasTraefikImage {
+		println("Pulling traefik image")
+		cli.ImagePull(context.Background(), "traefik:2.11", imageTypes.ImagePullOptions{})
+		println("Pulled traefik image, waiting for it to settle")
+		time.Sleep(4 * time.Second)
+		return ensureTraefikRunning(cli)
+	}
 	if containerId != "" {
 		if !isRunning {
 			if err := cli.ContainerStart(context.Background(), containerId, container.StartOptions{}); err != nil {
@@ -51,7 +72,7 @@ func ensureTraefikRunning(cli *client.Client) error {
 		}
 	} else {
 		containerCreated, err := cli.ContainerCreate(context.Background(), &container.Config{
-			Image: "traefik:latest",
+			Image: "traefik:2.11",
 			Cmd: []string{
 				"--api.insecure=true",
 				"--entrypoints.web.address=:80",
@@ -64,6 +85,11 @@ func ensureTraefikRunning(cli *client.Client) error {
 				"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
 				"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
 			},
+			ExposedPorts: map[nat.Port]struct{}{
+				"80/tcp":   {},
+				"443/tcp":  {},
+				"8080/tcp": {},
+			},
 		}, &container.HostConfig{
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
@@ -73,9 +99,9 @@ func ensureTraefikRunning(cli *client.Client) error {
 				"/var/jig:/var/jig",
 			},
 			PortBindings: map[nat.Port][]nat.PortBinding{
-				"80/tcp":   {{HostPort: "80"}},
-				"8080/tcp": {{HostPort: "8080"}},
-				"443/tcp":  {{HostPort: "443"}},
+				"80/tcp":   {{HostPort: "80/tcp"}},
+				"443/tcp":  {{HostPort: "443/tcp"}},
+				"8080/tcp": {{HostPort: "8081/tcp"}},
 			},
 		}, &network.NetworkingConfig{}, &v1.Platform{}, "traefik")
 		if err != nil {
@@ -115,19 +141,10 @@ func main() {
 				},
 				Action: func(ctx *cli.Context) error {
 					// Create the Claims
-					claims := &jwt.RegisteredClaims{
-						Issuer:  "jig",
-						Subject: "admin",
-					}
-
-					token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-					token.Header["alg"] = "HS256"
-					ss, err := token.SignedString([]byte(jwtSecretKey))
-
+					ss, err := MakeKey()
 					if err != nil {
 						return err
 					}
-
 					if ctx.Bool("short") {
 						print(ss)
 					} else {
@@ -143,6 +160,21 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func MakeKey() (string, error) {
+	claims := &jwt.RegisteredClaims{
+		Issuer:  "jig",
+		Subject: "admin",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token.Header["alg"] = "HS256"
+	ss, err := token.SignedString([]byte(jwtSecretKey))
+	if err != nil {
+		return "", err
+	}
+	return ss, nil
 }
 
 func serve() {
@@ -164,16 +196,23 @@ func serve() {
 	}
 	defer secretDb.Close()
 
-	print("Listening on 8080")
-	http.Handle("/deployments", deploymentsRouter(*cli, secretDb))
-	http.Handle("/secrets", secretRouter(secretDb))
-	http.ListenAndServe("0.0.0.0:8080", nil)
+	print("Listening on 5000")
+	http.ListenAndServe("0.0.0.0:5000", MainRouter(cli, secretDb))
 }
 
-func secretRouter(secret_db *Secrets) *http.ServeMux {
-	r := http.NewServeMux()
+func MainRouter(cli *client.Client, secret_db *Secrets) *mux.Router {
+	r := mux.NewRouter()
 
-	r.HandleFunc("POST /secrets", func(w http.ResponseWriter, r *http.Request) {
+	SecretRouter(r.PathPrefix("/secrets").Subrouter(), secret_db)
+
+	DeploymentsRouter(r.PathPrefix("/deployments").Subrouter(), cli, secret_db)
+
+	return r
+}
+
+func SecretRouter(r *mux.Router, secret_db *Secrets) *mux.Router {
+
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -192,14 +231,14 @@ func secretRouter(secret_db *Secrets) *http.ServeMux {
 		}
 
 		w.WriteHeader(http.StatusCreated)
-	})
+	}).Methods("POST")
 
-	r.HandleFunc("DELETE /secrets/{name}/", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/{name}", func(w http.ResponseWriter, r *http.Request) {
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		name := r.PathValue("name")
+		name := mux.Vars(r)["name"]
 
 		err := secret_db.Delete(name)
 		if err != nil {
@@ -210,9 +249,9 @@ func secretRouter(secret_db *Secrets) *http.ServeMux {
 
 		w.WriteHeader(http.StatusNoContent)
 
-	})
+	}).Methods("DELETE")
 
-	r.HandleFunc("GET /secrets", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
@@ -236,16 +275,16 @@ func secretRouter(secret_db *Secrets) *http.ServeMux {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(secretsJson)
-	})
+	}).Methods("GET")
 
-	r.HandleFunc("GET /secrets/{name}/", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("/{name}", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 
-		name := r.PathValue("name")
+		name := mux.Vars(r)["name"]
 		secret, err := secret_db.Get(name)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -262,14 +301,14 @@ func secretRouter(secret_db *Secrets) *http.ServeMux {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(secretJson)
-	})
+	}).Methods("GET")
 
 	return r
 }
 
-func deploymentsRouter(cli client.Client, secretDb *Secrets) *http.ServeMux {
-	r := http.NewServeMux()
-	r.HandleFunc("GET /deployments", func(w http.ResponseWriter, r *http.Request) {
+func DeploymentsRouter(r *mux.Router, cli *client.Client, secretDb *Secrets) *mux.Router {
+
+	r.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -309,7 +348,7 @@ func deploymentsRouter(cli client.Client, secretDb *Secrets) *http.ServeMux {
 		w.Write(deploymentsJson)
 	})
 
-	r.HandleFunc("POST /deployments", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -417,7 +456,7 @@ func deploymentsRouter(cli client.Client, secretDb *Secrets) *http.ServeMux {
 
 	})
 
-	r.HandleFunc("DELETE /deployments/{name}", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("DELETE /{name}", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
@@ -444,7 +483,7 @@ func deploymentsRouter(cli client.Client, secretDb *Secrets) *http.ServeMux {
 		http.Error(w, "Container not found", http.StatusNotFound)
 	})
 
-	r.HandleFunc("GET /deployments/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
+	r.HandleFunc("GET /{name}/logs", func(w http.ResponseWriter, r *http.Request) {
 
 		if err := ensureAuth(r); err != nil {
 			http.Error(w, err.Error(), http.StatusUnauthorized)
