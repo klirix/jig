@@ -1,0 +1,87 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"askh.at/jig/v2/pkgs/types"
+	"github.com/go-chi/chi/v5"
+)
+
+func SecretRouter(secret_db *Secrets) func(r chi.Router) {
+	return func(r chi.Router) {
+		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+
+			var body types.NewSecretBody
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := secret_db.Insert(body.Name, body.Value); err != nil {
+				println("Failed to insert secret", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusCreated)
+		})
+
+		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+
+			secrets, err := secret_db.List()
+
+			if err != nil {
+				println("Failed to list secrets", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			secretList := types.SecretList{Secrets: secrets}
+
+			secretsJson, err := json.Marshal(secretList)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(secretsJson)
+		})
+
+		r.Delete("/{name}", func(w http.ResponseWriter, r *http.Request) {
+
+			name := r.PathValue("name")
+
+			err := secret_db.Delete(name)
+			if err != nil {
+				println("Failed to delete secret", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.WriteHeader(http.StatusNoContent)
+
+		})
+
+		r.Get("/{name}", func(w http.ResponseWriter, r *http.Request) {
+
+			name := r.PathValue("name")
+			secret, err := secret_db.Get(name)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			var secretList types.SecretInspect = types.SecretInspect{Value: secret}
+
+			secretJson, err := json.Marshal(secretList)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(secretJson)
+		})
+	}
+}
