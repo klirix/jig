@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/mattn/go-sqlite3"
+	"modernc.org/sqlite"
 )
 
 func InitSecretsWithName(filepath string) (*Secrets, error) {
@@ -18,7 +18,7 @@ func InitSecretsWithName(filepath string) (*Secrets, error) {
 			return nil, err
 		}
 	}
-	newDb, err := sql.Open("sqlite3", filepath)
+	newDb, err := sql.Open("sqlite", filepath)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func (secrets *Secrets) Insert(name, value string) error {
 	_, err := secrets.db.Exec("INSERT INTO secrets (name, value) VALUES (?, ?)", name, value)
 
 	if err != nil {
-		if (err.(sqlite3.Error)).Code == sqlite3.ErrConstraint {
+		if (err.(*sqlite.Error)).Code() == 19 {
 			return ErrSecretExists
 		}
 	}

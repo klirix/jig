@@ -321,8 +321,12 @@ func main() {
 				Name: "deployments",
 				Subcommands: []*cli.Command{
 					{
-						Name:   "ls",
-						Usage:  "List deployments",
+						Name:  "ls",
+						Usage: "List deployments",
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						Action: listDeployments,
 					},
 					{
@@ -341,6 +345,8 @@ func main() {
 								Usage:   "Build the image locally",
 								Value:   false,
 							},
+							tokenFlag,
+							endpointFlag,
 						},
 						Action: deployComment,
 					},
@@ -355,6 +361,8 @@ func main() {
 								Usage:   "Verbose output",
 								Value:   false,
 							},
+							tokenFlag,
+							endpointFlag,
 						},
 						Args:      true,
 						ArgsUsage: " name",
@@ -379,9 +387,13 @@ func main() {
 						},
 					},
 					{
-						Name:      "logs",
-						Usage:     "Get logs for a container",
-						Args:      true,
+						Name:  "logs",
+						Usage: "Get logs for a container",
+						Args:  true,
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						ArgsUsage: "deployment name",
 						Action: func(ctx *cli.Context) error {
 							enrichConfigFromFlags(ctx)
@@ -411,6 +423,10 @@ func main() {
 					{
 						Name:  "stats",
 						Usage: "Get resource usage stats",
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						Action: func(ctx *cli.Context) error {
 							enrichConfigFromFlags(ctx)
 							req, _ := createRequest("GET", "/deployments/stats")
@@ -450,23 +466,39 @@ func main() {
 						Name:    "ls",
 						Aliases: []string{"list"},
 						Usage:   "List secrets",
-						Action:  ListSecrets,
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
+						Action: ListSecrets,
 					},
 					{
-						Name:   "inspect",
-						Usage:  "Inspect a secret",
+						Name:  "inspect",
+						Usage: "Inspect a secret",
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						Action: InspectSecret,
 					},
 
 					{
-						Name:   "add",
-						Args:   true,
-						Usage:  "add a secret",
+						Name:  "add",
+						Args:  true,
+						Usage: "add a secret",
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						Action: AddSecret,
 					},
 					{
-						Name:   "rm",
-						Usage:  "delete a secret",
+						Name:  "rm",
+						Usage: "delete a secret",
+						Flags: []cli.Flag{
+							tokenFlag,
+							endpointFlag,
+						},
 						Action: DeleteSecret,
 					},
 				},
@@ -486,6 +518,8 @@ func main() {
 				Usage:   "Build the image locally",
 				Value:   false,
 			},
+			tokenFlag,
+			endpointFlag,
 		},
 	}
 
@@ -493,6 +527,19 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+var (
+	tokenFlag = &cli.StringFlag{
+		Name:    "token",
+		Aliases: []string{"t"},
+		Usage:   "Token to use for authentication",
+	}
+	endpointFlag = &cli.StringFlag{
+		Name:    "endpoint",
+		Aliases: []string{"e"},
+		Usage:   "Jig server url",
+	}
+)
 
 func listDeployments(ctx *cli.Context) error {
 	enrichConfigFromFlags(ctx)

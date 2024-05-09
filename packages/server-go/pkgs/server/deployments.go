@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
@@ -199,8 +200,23 @@ func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
 				return
 			}
 
-			restartPolicy := container.RestartPolicy{
-				Name: container.RestartPolicyMode(config.RestartPolicy),
+			var restartPolicy container.RestartPolicy
+			if strings.Contains(config.RestartPolicy, ":") {
+				parts := strings.Split(config.RestartPolicy, ":")
+				retryCount, err := strconv.Atoi(parts[1])
+				if err != nil {
+					println("Failed to parse retry count", err.Error())
+					http.Error(w, "Failed to parse retry count", http.StatusInternalServerError)
+					return
+				}
+				restartPolicy = container.RestartPolicy{
+					Name:              container.RestartPolicyMode(parts[0]),
+					MaximumRetryCount: retryCount,
+				}
+			} else {
+				restartPolicy = container.RestartPolicy{
+					Name: container.RestartPolicyMode(config.RestartPolicy),
+				}
 			}
 
 			_, err = cli.ContainerCreate(context.Background(), &container.Config{
