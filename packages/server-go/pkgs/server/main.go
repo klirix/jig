@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -9,7 +10,6 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
-	imageTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
@@ -41,20 +41,23 @@ func ensureTraefikRunning(cli *client.Client) error {
 
 		}
 	}
-	imageList, err := cli.ImageList(context.Background(), imageTypes.ImageListOptions{})
+	imageList, err := cli.ImageList(context.Background(), types.ImageListOptions{})
 	if err != nil {
 		println("Failed to list images", err.Error())
 		return err
 	}
 	hasTraefikImage := false
 	for _, image := range imageList {
+		if len(image.RepoTags) == 0 {
+			continue
+		}
 		if strings.Contains(image.RepoTags[0], "traefik") {
 			hasTraefikImage = true
 		}
 	}
 	if !hasTraefikImage {
 		println("Pulling traefik image")
-		cli.ImagePull(context.Background(), "traefik:2.11", imageTypes.ImagePullOptions{})
+		cli.ImagePull(context.Background(), "traefik:2.11", types.ImagePullOptions{})
 		println("Pulled traefik image, waiting for it to settle")
 		time.Sleep(4 * time.Second)
 		return ensureTraefikRunning(cli)
@@ -101,8 +104,15 @@ func ensureTraefikRunning(cli *client.Client) error {
 				"8080/tcp": {{HostPort: "8081/tcp"}},
 			},
 		}, &network.NetworkingConfig{}, &v1.Platform{}, "traefik")
+
 		if err != nil {
 			println("Failed to create container", err.Error())
+			return err
+		}
+
+		err = cli.NetworkConnect(context.Background(), "jig", containerCreated.ID, &network.EndpointSettings{})
+		if err != nil {
+			println("Failed to connect to network", err.Error())
 			return err
 		}
 		println("Container created ", containerCreated.ID)
@@ -140,13 +150,11 @@ func main() {
 					if err != nil {
 						return err
 					}
-
-					if ctx.Bool("short") {
-						print(ss)
-					} else {
+					if !ctx.Bool("short") {
 						println("Your new jwt secret key ✨🔑:")
-						println(ss)
 					}
+
+					fmt.Printf("%s+%s\n", os.Getenv("JIG_DOMAIN"), ss)
 					return nil
 				},
 			},
@@ -200,17 +208,17 @@ func serve() {
 		return
 	}
 
-	if err := ensureTraefikRunning(cli); err != nil {
-		log.Println("Failed to ensure traefik is running")
-		panic(err)
-	}
-
 	if err := ensureNetworkIsUp(cli); err != nil {
 		log.Println("Failed to ensure bridge network is running")
 		panic(err)
 	}
 
-	secretDb, err := InitSecrets()
+	if err := ensureTraefikRunning(cli); err != nil {
+		log.Println("Failed to ensure traefik is running")
+		panic(err)
+	}
+
+	secretDb, err := InitSecretsWithName("/var/jig/secrets.db")
 	if err != nil {
 		log.Println("Failed to initialize secret_db")
 		panic(err)
@@ -226,11 +234,14 @@ func mainRouter(cli *client.Client, secret_db *Secrets) chi.Router {
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.With(ensureAuth)
 
-	r.Route("/secrets", SecretRouter(secret_db))
+	r.With(ensureAuth).Route("/secrets", SecretRouter(secret_db))
 
-	r.Route("/deployments", DeploymentsRouter(cli, secret_db))
+	r.With(ensureAuth).Route("/deployments", DeploymentsRouter(cli, secret_db))
+
+	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("Hewwo!"))
+	})
 
 	return r
 }

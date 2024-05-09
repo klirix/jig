@@ -28,15 +28,18 @@ import (
 
 func makeLabels(name string, rule string) map[string]string {
 	return map[string]string{
-		"traefik.enable":                  "true",
-		name + `.rule`:                    rule,
-		name + `.middlewares`:             "https-only",
-		name + `.entrypoints`:             "web",
-		name + `-secure.rule`:             rule,
-		name + `-secure.tls.certresolver`: "defaultresolver",
-		name + `-secure.tls`:              "true",
-		name + `-secure.entrypoints`:      "websecure",
-		"jig.name":                        name,
+		"traefik.enable": "true",
+		"traefik.http.middlewares.https-only.redirectscheme.permanent": "true",
+		"traefik.http.middlewares.https-only.redirectscheme.scheme":    "https",
+		"traefik.http.routers." + name + `.rule`:                       rule,
+		"traefik.http.routers." + name + `.middlewares`:                "https-only",
+		"traefik.http.routers." + name + `.entrypoints`:                "web",
+		"traefik.http.routers." + name + `-secure.rule`:                rule,
+		"traefik.http.routers." + name + `-secure.tls.certresolver`:    "defaultresolver",
+		"traefik.http.routers." + name + `-secure.tls`:                 "true",
+		"traefik.http.routers." + name + `-secure.entrypoints`:         "websecure",
+		"traefik.docker.network":                                       "jig",
+		"jig.name":                                                     name,
 	}
 }
 
@@ -91,7 +94,7 @@ func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
 				deployments = append(deployments, jigtypes.Deployment{
 					ID:       container.ID,
 					Name:     container.Labels["jig.name"],
-					Rule:     container.Labels[name+`-secure.rule`],
+					Rule:     container.Labels["traefik.http.routers."+name+`-secure.rule`],
 					Status:   container.State,
 					Lifetime: container.Status,
 				})

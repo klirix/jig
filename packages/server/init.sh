@@ -18,7 +18,7 @@ fi
 docker stop jig
 docker rm jig
 
-docker pull traefik:latest
+docker pull traefik:2.11
 docker pull askhatsaiapov/jig:latest
 
 

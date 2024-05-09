@@ -5,31 +5,56 @@ import (
 	"errors"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"modernc.org/sqlite"
 )
 
-func InitSecretsWithName(filepath string) (*Secrets, error) {
-	log.Println("db.go initialized")
-	if _, err := os.Stat(filepath); errors.Is(err, os.ErrNotExist) {
-		_, err := os.Create(filepath)
+func InitSecretsWithName(pathToDb string) (*Secrets, error) {
+	if _, err := os.Stat(pathToDb); errors.Is(err, os.ErrNotExist) {
+		parts := strings.Split(filepath.ToSlash(pathToDb), "/")
+		dir := strings.Join(parts[:len(parts)-1], "/")
+		// file := parts[len(parts)-1]
+
+		err := os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			log.Println("Failed to create db directory", err.Error())
+			return nil, err
+		}
+
+		_, err = os.Create(pathToDb)
 		if err != nil {
 			log.Println("Failed to create db file", err.Error())
 			return nil, err
 		}
 	}
-	newDb, err := sql.Open("sqlite", filepath)
+	newDb, err := sql.Open("sqlite", pathToDb)
 	if err != nil {
+		log.Printf("Failed to open db file: %v", err.Error())
 		return nil, err
 	}
-	_, err = newDb.Exec("CREATE TABLE IF NOT EXISTS secrets (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
+	_, err = newDb.Exec("CREATE TABLE secrets (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
 	if err != nil {
+		sqliteError := (err.(*sqlite.Error))
+		if sqliteError.Code() == 1 && strings.Contains(sqliteError.Error(), "table secrets already exists") {
+			log.Println("db.go initialized")
+			return &Secrets{db: newDb}, nil
+		}
+		log.Printf("Failed to create table: %v", err.Error())
 		return nil, err
 	}
 
-	if _, err = newDb.Exec("create unique index if not exists uniqname on secrets (name);"); err != nil {
+	if _, err = newDb.Exec("create unique index uniqname on secrets (name);"); err != nil {
+		sqliteError := (err.(*sqlite.Error))
+		if sqliteError.Code() == 1 && strings.Contains(sqliteError.Error(), " already exists") {
+			log.Println("db.go initialized")
+			return &Secrets{db: newDb}, nil
+		}
+		log.Printf("Failed to create unique index: %v", err.Error())
 		return nil, err
 	}
+	log.Println("db.go initialized")
 	return &Secrets{db: newDb}, nil
 }
 
