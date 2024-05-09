@@ -73,10 +73,14 @@ func SecretRouter(secret_db *Secrets) func(r chi.Router) {
 		r.Get("/{name}", func(w http.ResponseWriter, r *http.Request) {
 
 			name := r.PathValue("name")
-			secret, err := secret_db.Get(name)
+			secret, found, err := secret_db.Get(name)
 			if err != nil {
+				println("Failed to get secret", err.Error())
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
+			}
+			if !found {
+				http.Error(w, "Secret not found", http.StatusNotFound)
 			}
 
 			var secretList jigtypes.SecretInspect = jigtypes.SecretInspect{Value: secret}

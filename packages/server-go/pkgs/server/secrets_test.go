@@ -53,6 +53,24 @@ func TestSecrets(t *testing.T) {
 		}
 	})
 
+	t.Run("TestSecretInspect404", func(t *testing.T) {
+
+		// Start the server
+		req := httptest.NewRequest(http.MethodGet, "/secrets/test", nil)
+		key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+		// Get a secret
+		res := w.Result()
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("Expected status code 404, got %d", res.StatusCode)
+			t.FailNow()
+		}
+	})
+
 	t.Run("TestSecretCreate", func(t *testing.T) {
 
 		testval := uuid.New().String()
@@ -107,7 +125,10 @@ func TestSecrets(t *testing.T) {
 			t.FailNow()
 		}
 
-		_, err := db.Get(name)
+		_, found, err := db.Get(name)
+		if found {
+			t.Errorf("Expected secret to be deleted, but it still exists")
+		}
 		if err == nil {
 			t.Errorf("Expected secret to be deleted, but it still exists")
 		}

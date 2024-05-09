@@ -56,10 +56,16 @@ func (secrets *Secrets) Insert(name, value string) error {
 	return err
 }
 
-func (secrets *Secrets) Get(name string) (string, error) {
+func (secrets *Secrets) Get(name string) (string, bool, error) {
 	var value string
 	err := secrets.db.QueryRow("SELECT value FROM secrets WHERE name = ?", name).Scan(&value)
-	return value, err
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return value, true, err
 }
 
 func (secrets *Secrets) GetValue(name string) (string, error) {

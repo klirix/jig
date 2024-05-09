@@ -44,7 +44,10 @@ func makeEnvs(newenvs map[string]string, secretDb *Secrets) ([]string, error) {
 	resolvedEnvs := []string{}
 	for key, value := range newenvs {
 		if value[0] == '@' {
-			secretValue, err := secretDb.Get(value[1:])
+			secretValue, found, err := secretDb.Get(value[1:])
+			if !found {
+				return nil, errors.New("Secret not found: " + value)
+			}
 			if err != nil {
 				return nil, errors.New("Failed to get secret value: " + value)
 			}

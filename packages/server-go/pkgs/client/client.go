@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"text/tabwriter"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -101,7 +103,7 @@ func filterFiles(matches []string, ignorePatterns []string) []string {
 	for _, filename := range matches {
 		matchedIgnore := false
 		for _, ignorePattern := range ignorePatterns {
-			matched, err := filepath.Match(ignorePattern, filename)
+			matched, err := doublestar.Match(ignorePattern, filename)
 			if err != nil {
 				log.Fatal("Failed to match the pattern", err.Error())
 			}
@@ -201,7 +203,14 @@ func deployComment(c *cli.Context) error {
 
 	ignorePatterns := loadIgnorePatterns(".jigignore")
 
-	matches, err := filepath.Glob("**")
+	var matches = []string{}
+	err = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		matches = append(matches, path)
+		return nil
+	})
 	if err != nil {
 		log.Fatal("Failed to glob the directory", err.Error())
 	}
@@ -214,6 +223,7 @@ func deployComment(c *cli.Context) error {
 			println("-", file)
 		}
 	}
+	fmt.Printf("Packing files, ignoring: %v", ignorePatterns)
 
 	reader, writer := io.Pipe()
 
@@ -561,9 +571,10 @@ func listDeployments(ctx *cli.Context) error {
 	}
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
-	fmt.Fprintln(writer, "name\trule\tstate\tstatus")
+	println("> Current deployments:\n")
+	fmt.Fprintln(writer, "  name\trule\tstate\tstatus")
 	for _, deployment := range deployments {
-		fmt.Fprintf(writer, "%s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime)
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime)
 	}
 	writer.Flush()
 	return nil
@@ -589,9 +600,14 @@ func ListSecrets(ctx *cli.Context) error {
 	}
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
-	fmt.Fprintln(writer, "secret name")
+	fmt.Fprintln(os.Stdout, []any{"> Secrets:\n"}...)
+	if len(secretList.Secrets) > 0 {
+		fmt.Fprintln(writer, "  name")
+	} else {
+		fmt.Fprintln(writer, "  No secrets set yet 🤫")
+	}
 	for _, secret := range secretList.Secrets {
-		fmt.Fprintf(writer, "%s\n", secret)
+		fmt.Fprintf(writer, "  %s\n", secret)
 	}
 	writer.Flush()
 	return nil
