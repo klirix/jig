@@ -1,4 +1,4 @@
-package types
+package jigtypes
 
 type DeploymentConfig struct {
 	Name          string            `json:"name"`
@@ -10,10 +10,11 @@ type DeploymentConfig struct {
 }
 
 type Deployment struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Rule   string `json:"rule"`
-	Status string `json:"status"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Rule     string `json:"rule"`
+	Status   string `json:"status"`
+	Lifetime string `json:"lifetime"`
 }
 
 type NewSecretBody struct {
@@ -27,4 +28,11 @@ type SecretList struct {
 
 type SecretInspect struct {
 	Value string `json:"value"`
+}
+
+type Stats struct {
+	Name             string  `json:"name"`
+	CpuPercentage    float64 `json:"cpuPercentage"`
+	MemoryPercentage float64 `json:"memoryPercentage"`
+	MemoryBytes      float64 `json:"memoryBytes"`
 }

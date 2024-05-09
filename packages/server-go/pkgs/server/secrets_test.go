@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"askh.at/jig/v2/pkgs/types"
+	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
 )
@@ -42,7 +42,7 @@ func TestSecrets(t *testing.T) {
 			t.FailNow()
 		}
 
-		var secret types.SecretInspect
+		var secret jigtypes.SecretInspect
 
 		bodyRes, _ := io.ReadAll(res.Body)
 
@@ -138,7 +138,7 @@ func TestSecrets(t *testing.T) {
 		}
 
 		// Parse the response body
-		var result types.SecretList
+		var result jigtypes.SecretList
 		body, _ := io.ReadAll(w.Body)
 		err := json.Unmarshal(body, &result)
 		if err != nil {

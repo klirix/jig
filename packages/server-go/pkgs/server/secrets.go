@@ -2,9 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
-	"askh.at/jig/v2/pkgs/types"
+	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -12,15 +13,21 @@ func SecretRouter(secret_db *Secrets) func(r chi.Router) {
 	return func(r chi.Router) {
 		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
 
-			var body types.NewSecretBody
+			var body jigtypes.NewSecretBody
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+
 			if err := secret_db.Insert(body.Name, body.Value); err != nil {
-				println("Failed to insert secret", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+				switch {
+				case errors.Is(err, ErrSecretExists):
+					http.Error(w, err.Error(), http.StatusConflict)
+					return
+				default:
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 			}
 
 			w.WriteHeader(http.StatusCreated)
@@ -36,7 +43,7 @@ func SecretRouter(secret_db *Secrets) func(r chi.Router) {
 				return
 			}
 
-			secretList := types.SecretList{Secrets: secrets}
+			secretList := jigtypes.SecretList{Secrets: secrets}
 
 			secretsJson, err := json.Marshal(secretList)
 			if err != nil {
@@ -72,7 +79,7 @@ func SecretRouter(secret_db *Secrets) func(r chi.Router) {
 				return
 			}
 
-			var secretList types.SecretInspect = types.SecretInspect{Value: secret}
+			var secretList jigtypes.SecretInspect = jigtypes.SecretInspect{Value: secret}
 
 			secretJson, err := json.Marshal(secretList)
 			if err != nil {

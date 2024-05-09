@@ -8,12 +8,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	imageTypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/mattn/go-sqlite3"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -170,32 +173,59 @@ func MakeKey() (string, error) {
 	return ss, nil
 }
 
+func ensureNetworkIsUp(cli *client.Client) error {
+	networks, err := cli.NetworkList(context.Background(), types.NetworkListOptions{
+		Filters: filters.NewArgs(filters.KeyValuePair{Key: "name", Value: "jig"}),
+	})
+	if err != nil {
+		return err
+	}
+	for _, network := range networks {
+		if network.Name == "jig" {
+			return nil
+		}
+	}
+	log.Print("Network jig doesn't exist, creating network")
+	_, err = cli.NetworkCreate(context.Background(), "jig", types.NetworkCreate{Driver: "bridge"})
+	if err != nil {
+		return nil
+	}
+	return nil
+}
+
 func serve() {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		print("Failed to connect to docker daemon")
+		log.Println("Failed to connect to docker daemon")
 		return
 	}
 
 	if err := ensureTraefikRunning(cli); err != nil {
-		println("Failed to ensure traefik is running")
+		log.Println("Failed to ensure traefik is running")
+		panic(err)
+	}
+
+	if err := ensureNetworkIsUp(cli); err != nil {
+		log.Println("Failed to ensure bridge network is running")
 		panic(err)
 	}
 
 	secretDb, err := InitSecrets()
 	if err != nil {
-		println("Failed to initialize secret_db")
+		log.Println("Failed to initialize secret_db")
 		panic(err)
 	}
 	defer secretDb.Close()
 
-	print("Listening on 5000")
+	log.Println("Listening on 5000")
 	http.ListenAndServe("0.0.0.0:5000", mainRouter(cli, secretDb))
 }
 
 func mainRouter(cli *client.Client, secret_db *Secrets) chi.Router {
 	r := chi.NewRouter()
 
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
 	r.With(ensureAuth)
 
 	r.Route("/secrets", SecretRouter(secret_db))

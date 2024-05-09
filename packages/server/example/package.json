@@ -5,6 +5,6 @@
   "main": "index.mjs",
   "license": "MIT",
   "dependencies": {
-    "zod": "^3.21.4"
+    "zod": "^3.23"
   }
 }

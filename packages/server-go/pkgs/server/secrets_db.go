@@ -3,15 +3,18 @@ package main
 import (
 	"database/sql"
 	"errors"
+	"log"
 	"os"
+
+	"github.com/mattn/go-sqlite3"
 )
 
 func InitSecretsWithName(filepath string) (*Secrets, error) {
-	println("db.go initialized")
+	log.Println("db.go initialized")
 	if _, err := os.Stat(filepath); errors.Is(err, os.ErrNotExist) {
 		_, err := os.Create(filepath)
 		if err != nil {
-			println("Failed to create db file", err.Error())
+			log.Println("Failed to create db file", err.Error())
 			return nil, err
 		}
 	}
@@ -21,6 +24,10 @@ func InitSecretsWithName(filepath string) (*Secrets, error) {
 	}
 	_, err = newDb.Exec("CREATE TABLE IF NOT EXISTS secrets (id INTEGER PRIMARY KEY, name TEXT, value TEXT)")
 	if err != nil {
+		return nil, err
+	}
+
+	if _, err = newDb.Exec("create unique index if not exists uniqname on secrets (name);"); err != nil {
 		return nil, err
 	}
 	return &Secrets{db: newDb}, nil
@@ -36,8 +43,16 @@ type Secrets struct {
 	db *sql.DB
 }
 
+var ErrSecretExists = errors.New("secret already exists")
+
 func (secrets *Secrets) Insert(name, value string) error {
 	_, err := secrets.db.Exec("INSERT INTO secrets (name, value) VALUES (?, ?)", name, value)
+
+	if err != nil {
+		if (err.(sqlite3.Error)).Code == sqlite3.ErrConstraint {
+			return ErrSecretExists
+		}
+	}
 	return err
 }
 
@@ -59,7 +74,8 @@ func (secrets *Secrets) Update(name, value string) error {
 }
 
 func (secrets *Secrets) Delete(name string) error {
-	_, err := secrets.db.Exec("DELETE FROM secrets WHERE name = ?", name)
+	res, err := secrets.db.Exec("DELETE FROM secrets WHERE name = ?", name)
+	res.RowsAffected()
 	return err
 }
 
