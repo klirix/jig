@@ -1,27 +1,12 @@
-from node:alpine as base
+FROM oven/bun:alpine as builder
+WORKDIR /app
+COPY package.json bun.lockb ./
+RUN bun install
+COPY . .
+RUN bun run build
 
-# -- BUILDER
-
-from base as builder
-workdir /app
-copy package.json package.json
-run yarn
-copy . .
-run yarn build
-
-# -- PROD DEPS
-
-from base as deps
-workdir /app
-copy package.json package.json
-run yarn --prod
-
-# -- RUNNER
-
-from base as runner
-workdir /app
-copy package.json package.json
-copy --from=builder /app/build build
-copy --from=deps /app/node_modules node_modules
-expose 3000
-cmd ["node", "build"]
+# Stage 2: Serve the static website using Nginx
+FROM nginx:alpine
+COPY --from=builder /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

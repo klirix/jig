@@ -1,6 +1,6 @@
 {
   "name": "jig-website",
-  "port": 3000,
+  "port": 80,
   "restartPolicy": "on-failure:2",
   "domain": "deploywithjig.askh.at",
   "envs": {}
