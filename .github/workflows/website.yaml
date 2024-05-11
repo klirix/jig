@@ -1,0 +1,20 @@
+on:
+  push:
+    paths:
+      - "website/**"
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JIG
+        run: curl -fsSL https://deploywithjig.askh.at/install.sh | bash
+
+      - name: Deploy with remote build
+        working-directory: ./website
+        run: $HOME/.jig/jig -t ${{ secrets.JIG_TOKEN }}

@@ -4,6 +4,5 @@
   "port": 80,
   "restartPolicy": "on-failure:2",
   "domain": "deploywithjig.askh.at",
-  "middlewares": {},
   "envs": {}
 }
