@@ -1,1 +1,4 @@
-node_modules
+__debug_bin*
+.envrc
+*.db
+bin/*
