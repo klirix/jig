@@ -145,6 +145,17 @@ func writeFileToTar(filename string, tw *tar.Writer) {
 	}
 }
 
+type TrackableReader struct {
+	BytesRead int64
+	io.ReadCloser
+}
+
+func (t *TrackableReader) Read(p []byte) (n int, err error) {
+	n, err = t.ReadCloser.Read(p)
+	t.BytesRead += int64(n)
+	return
+}
+
 func loginCommand(c *cli.Context) error {
 	token := c.Args().Get(0)
 	strings.Split(token, "+")
@@ -176,12 +187,15 @@ func loginCommand(c *cli.Context) error {
 }
 
 func deployComment(c *cli.Context) error {
-
-	_, err := os.Stat("./jig.json")
+	configFile := "./jig.json"
+	if c.String("config") != "" {
+		configFile = c.String("config")
+	}
+	_, err := os.Stat(configFile)
 	if err != nil {
 		log.Fatal("No jig.json file found in the current directory")
 	}
-	configContents, err := os.ReadFile("./jig.json")
+	configContents, err := os.ReadFile(configFile)
 	if err != nil {
 		log.Fatal("Failed to read jig.json", err)
 	}
@@ -223,7 +237,7 @@ func deployComment(c *cli.Context) error {
 			println("-", file)
 		}
 	}
-	fmt.Printf("Packing files, ignoring: %v", ignorePatterns)
+	fmt.Printf("Packing files, ignoring: %v\n", ignorePatterns)
 
 	reader, writer := io.Pipe()
 
@@ -280,21 +294,21 @@ func deployComment(c *cli.Context) error {
 
 	req, _ := createRequest("POST", "/deployments")
 	req.Header.Add("Content-Type", "application/x-tar")
-	println("Uploading image", string(cleanedconfig))
+
 	req.Header.Add("x-jig-config", string(cleanedconfig))
 	if localBuild {
 		req.Header.Add("x-jig-image", "true")
 	} else {
 		req.Header.Add("x-jig-image", "false")
 	}
-	req.Body = uploadStream
+	req.Body = &TrackableReader{ReadCloser: uploadStream}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		log.Fatal("Error making request: ", err)
 	}
 	defer resp.Body.Close()
-	print("status code", resp.StatusCode)
+
 	if localBuild {
 		if resp.StatusCode != 200 {
 			log.Fatal("Error creating deployment: ", resp.Status)
@@ -363,6 +377,11 @@ func main() {
 								Aliases: []string{"l"},
 								Usage:   "Build the image locally",
 								Value:   false,
+							},
+							&cli.StringFlag{
+								Name:    "config",
+								Aliases: []string{"c"},
+								Usage:   "Config file",
 							},
 							tokenFlag,
 							endpointFlag,

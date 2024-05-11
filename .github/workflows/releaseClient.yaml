@@ -1,0 +1,39 @@
+on:
+  push:
+    paths:
+      - "pkgs/client/**"
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.22
+
+      # You can test your matrix by printing the current Go version
+      - name: Build for darwin
+        run: GOOS=darwin GOARCH=arm64 go build -o bin/jig-darwin pkgs/client/client.go
+
+      - name: Build for linux
+        run: GOOS=darwin GOARCH=arm64 go build -o bin/jig-linux pkgs/client/client.go
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: "marvinpinto/action-automatic-releases@latest"
+        with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag: "latest"
+          prerelease: false
+          title: "Development Build"
+          files: |
+            jig-darwin
+            jig-linux
