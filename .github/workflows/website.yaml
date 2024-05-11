@@ -13,8 +13,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JIG
-        run: curl -fsSL https://deploywithjig.askh.at/install.sh | bash
+        run: |
+          curl -fsSL https://deploywithjig.askh.at/install.sh | bash
+          $HOME/.jig/jig login ${{ secrets.JIG_TOKEN }}
 
       - name: Deploy with remote build
         working-directory: ./website
-        run: $HOME/.jig/jig -t ${{ secrets.JIG_TOKEN }}
+        run: $HOME/.jig/jig

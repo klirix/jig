@@ -13,7 +13,7 @@ curl --fail --location --progress-bar --output jig $bun_uri
 chmod +x jig
 
 if [ ! -d $HOME/.jig ]; then
-  mkfir $HOME/.jig
+  mkdir $HOME/.jig
 fi
 
 mv jig $HOME/.jig/jig
