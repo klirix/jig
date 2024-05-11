@@ -21,7 +21,7 @@ jobs:
         run: GOOS=darwin GOARCH=arm64 go build -o jig-darwin pkgs/client/client.go
 
       - name: Build for linux
-        run: GOOS=darwin GOARCH=arm64 go build -o jig-linux pkgs/client/client.go
+        run: GOOS=linux GOARCH=amd64 go build -o jig-linux pkgs/client/client.go
 
       - name: Set outputs
         id: vars
