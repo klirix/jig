@@ -51,15 +51,6 @@ func loadFileConfig() error {
 	return nil
 }
 
-func enrichConfigFromFlags(cli *cli.Context) {
-	if cli.String("endpoint") != "" {
-		config.Endpoint = cli.String("endpoint")
-	}
-	if cli.String("token") != "" {
-		config.Token = cli.String("token")
-	}
-}
-
 var httpClient = &http.Client{}
 
 func createRequest(method, url string) (*http.Request, error) {
@@ -78,7 +69,6 @@ func loadIgnorePatterns(ignoreFile string) []string {
 	if err != nil {
 		return defaultIgnorePatterns
 	}
-	ignorePatterns := []string{}
 	file, err := os.Open(ignoreFile)
 	if err != nil {
 		log.Fatal(err)
@@ -87,11 +77,11 @@ func loadIgnorePatterns(ignoreFile string) []string {
 	if err != nil {
 		log.Fatal(err)
 	}
-	ignorePatterns = strings.Split(string(ignoreFileContents), "\n")
+	ignorePatterns := strings.Split(string(ignoreFileContents), "\n")
 	filteredIgnorePatterns := []string{}
 	for _, v := range ignorePatterns {
 		trimmed := strings.TrimSpace(v)
-		if trimmed != "" {
+		if trimmed != "" || strings.HasPrefix(trimmed, "#") {
 			filteredIgnorePatterns = append(filteredIgnorePatterns, trimmed)
 		}
 	}
@@ -156,15 +146,19 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func loginCommand(c *cli.Context) error {
-	token := c.Args().Get(0)
+func updateConfigUsingToken(token string) Config {
 	strings.Split(token, "+")
 	newConfig := Config{
 		Endpoint: strings.Split(token, "+")[0],
 		Token:    strings.Split(token, "+")[1],
 	}
-	config = newConfig
-	configJson, err := json.Marshal(newConfig)
+	return newConfig
+}
+
+func loginCommand(c *cli.Context) error {
+	token := c.Args().Get(0)
+	config = updateConfigUsingToken(token)
+	configJson, err := json.Marshal(config)
 	if err != nil {
 		log.Fatal("Error marshalling new config", err)
 	}
@@ -187,6 +181,9 @@ func loginCommand(c *cli.Context) error {
 }
 
 func deployComment(c *cli.Context) error {
+	if c.String("token") != "" {
+		config = updateConfigUsingToken(c.String("token"))
+	}
 	configFile := "./jig.json"
 	if c.String("config") != "" {
 		configFile = c.String("config")
@@ -336,6 +333,30 @@ func main() {
 		Name: "jig",
 		Commands: []*cli.Command{
 			{
+				Name:  "init",
+				Usage: "Login to the Jig server",
+				Args:  false,
+				Action: func(ctx *cli.Context) error {
+					if _, err := os.Stat("./jig.json"); err == nil {
+						log.Fatal("jig.json already exists")
+					}
+					currentDir, err := os.Getwd()
+					if err != nil {
+						log.Fatal("Error getting current directory: ", err)
+					}
+					err = os.WriteFile("./jig.json", []byte(`{
+  "$schema": "https://deploywithjig.askh.at/jsonschema.json",
+  "name": "`+currentDir+`"
+          }`), 0644)
+					if err != nil {
+						log.Fatal("Error writing jig.json: ", err)
+					}
+					os.WriteFile("./.jigignore", []byte(`# This is a list of files to ignore when deploying`), 0644)
+					println("Successfully created a jig.json file ✨")
+					return nil
+				},
+			},
+			{
 				Name:   "login",
 				Usage:  "Login to the Jig server",
 				Args:   true,
@@ -346,9 +367,33 @@ func main() {
 				Usage: "List deployments",
 				Flags: []cli.Flag{
 					tokenFlag,
-					endpointFlag,
 				},
 				Action: listDeployments,
+			},
+			{
+				Name:  "deploy",
+				Usage: "Deploy a container",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:    "verbose",
+						Aliases: []string{"v"},
+						Usage:   "Verbose output",
+						Value:   false,
+					},
+					&cli.BoolFlag{
+						Name:    "local",
+						Aliases: []string{"l"},
+						Usage:   "Build the image locally",
+						Value:   false,
+					},
+					&cli.StringFlag{
+						Name:    "config",
+						Aliases: []string{"c"},
+						Usage:   "Config file",
+					},
+					tokenFlag,
+				},
+				Action: deployComment,
 			},
 			{
 				Name: "deployments",
@@ -358,7 +403,6 @@ func main() {
 						Usage: "List deployments",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: listDeployments,
 					},
@@ -384,7 +428,6 @@ func main() {
 								Usage:   "Config file",
 							},
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: deployComment,
 					},
@@ -400,12 +443,13 @@ func main() {
 								Value:   false,
 							},
 							tokenFlag,
-							endpointFlag,
 						},
 						Args:      true,
 						ArgsUsage: " name",
 						Action: func(ctx *cli.Context) error {
-							enrichConfigFromFlags(ctx)
+							if ctx.String("token") != "" {
+								config = updateConfigUsingToken(ctx.String("token"))
+							}
 							name := ctx.Args().First()
 							if name == "" {
 								log.Fatal("Name is required")
@@ -430,11 +474,12 @@ func main() {
 						Args:  true,
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						ArgsUsage: "deployment name",
 						Action: func(ctx *cli.Context) error {
-							enrichConfigFromFlags(ctx)
+							if ctx.String("token") != "" {
+								config = updateConfigUsingToken(ctx.String("token"))
+							}
 							name := ctx.Args().First()
 							if name == "" {
 								log.Fatal("Name is required")
@@ -463,10 +508,11 @@ func main() {
 						Usage: "Get resource usage stats",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: func(ctx *cli.Context) error {
-							enrichConfigFromFlags(ctx)
+							if ctx.String("token") != "" {
+								config = updateConfigUsingToken(ctx.String("token"))
+							}
 							req, _ := createRequest("GET", "/deployments/stats")
 							resp, err := httpClient.Do(req)
 							if err != nil {
@@ -506,7 +552,6 @@ func main() {
 						Usage:   "List secrets",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: ListSecrets,
 					},
@@ -515,7 +560,6 @@ func main() {
 						Usage: "Inspect a secret",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: InspectSecret,
 					},
@@ -526,7 +570,6 @@ func main() {
 						Usage: "add a secret",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: AddSecret,
 					},
@@ -535,7 +578,6 @@ func main() {
 						Usage: "delete a secret",
 						Flags: []cli.Flag{
 							tokenFlag,
-							endpointFlag,
 						},
 						Action: DeleteSecret,
 					},
@@ -557,7 +599,6 @@ func main() {
 				Value:   false,
 			},
 			tokenFlag,
-			endpointFlag,
 		},
 	}
 
@@ -572,15 +613,12 @@ var (
 		Aliases: []string{"t"},
 		Usage:   "Token to use for authentication",
 	}
-	endpointFlag = &cli.StringFlag{
-		Name:    "endpoint",
-		Aliases: []string{"e"},
-		Usage:   "Jig server url",
-	}
 )
 
 func listDeployments(ctx *cli.Context) error {
-	enrichConfigFromFlags(ctx)
+	if ctx.String("token") != "" {
+		config = updateConfigUsingToken(ctx.String("token"))
+	}
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -609,7 +647,9 @@ func listDeployments(ctx *cli.Context) error {
 }
 
 func ListSecrets(ctx *cli.Context) error {
-	enrichConfigFromFlags(ctx)
+	if ctx.String("token") != "" {
+		config = updateConfigUsingToken(ctx.String("token"))
+	}
 	req, _ := createRequest("GET", "/secrets")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -642,7 +682,9 @@ func ListSecrets(ctx *cli.Context) error {
 }
 
 func DeleteSecret(ctx *cli.Context) error {
-	enrichConfigFromFlags(ctx)
+	if ctx.String("token") != "" {
+		config = updateConfigUsingToken(ctx.String("token"))
+	}
 
 	name := ctx.Args().Get(0)
 
@@ -665,7 +707,9 @@ func DeleteSecret(ctx *cli.Context) error {
 }
 
 func InspectSecret(ctx *cli.Context) error {
-	enrichConfigFromFlags(ctx)
+	if ctx.String("token") != "" {
+		config = updateConfigUsingToken(ctx.String("token"))
+	}
 
 	name := ctx.Args().Get(0)
 
@@ -694,7 +738,9 @@ func InspectSecret(ctx *cli.Context) error {
 }
 
 func AddSecret(ctx *cli.Context) error {
-	enrichConfigFromFlags(ctx)
+	if ctx.String("token") != "" {
+		config = updateConfigUsingToken(ctx.String("token"))
+	}
 
 	bodyToSend := jigtypes.NewSecretBody{
 		Name:  ctx.Args().Get(0),
