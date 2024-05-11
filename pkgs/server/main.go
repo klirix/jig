@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/urfave/cli/v2"
 	_ "modernc.org/sqlite"
@@ -185,6 +186,7 @@ func MakeKey() (string, error) {
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	token.Header["alg"] = "HS256"
+	token.Header["kid"] = uuid.New().String()
 	ss, err := token.SignedString([]byte(jwtSecretKey))
 	if err != nil {
 		return "", err
