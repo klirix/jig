@@ -71,25 +71,36 @@ func ensureTraefikRunning(cli *client.Client) error {
 			}
 		}
 	} else {
+		envs := []string{}
+		commands := []string{
+			"--api.insecure=true",
+			"--entrypoints.web.address=:80",
+			"--entrypoints.websecure.address=:443",
+			"--providers.docker=true",
+			"--providers.docker.exposedbydefault=false",
+			"--certificatesresolvers.defaultresolver=true",
+			"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
+			"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
+		}
+		if os.Getenv("JIG_VERCEL_APIKEY") != "" {
+			commands = append(commands,
+				"--certificatesresolvers.myresolver.acme.dnschallenge.provider=vercel",
+				"--certificatesresolvers.myresolver.acme.dnschallenge.delaybeforecheck=2")
+			envs = append(envs, "VERCEL_API_TOKEN="+os.Getenv("JIG_VERCEL_APIKEY"))
+		} else {
+			commands = append(commands,
+				"--certificatesresolvers.defaultresolver.acme.httpchallenge=true",
+				"--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web")
+		}
 		containerCreated, err := cli.ContainerCreate(context.Background(), &container.Config{
 			Image: "traefik:2.11",
-			Cmd: []string{
-				"--api.insecure=true",
-				"--entrypoints.web.address=:80",
-				"--entrypoints.websecure.address=:443",
-				"--providers.docker=true",
-				"--providers.docker.exposedbydefault=false",
-				"--certificatesresolvers.defaultresolver=true",
-				"--certificatesresolvers.defaultresolver.acme.httpchallenge=true",
-				"--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web",
-				"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
-				"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
-			},
+			Cmd:   commands,
 			ExposedPorts: map[nat.Port]struct{}{
 				"80/tcp":   {},
 				"443/tcp":  {},
 				"8080/tcp": {},
 			},
+			Env: envs,
 		}, &container.HostConfig{
 			RestartPolicy: container.RestartPolicy{
 				Name: "unless-stopped",
