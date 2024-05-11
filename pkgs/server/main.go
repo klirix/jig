@@ -84,8 +84,8 @@ func ensureTraefikRunning(cli *client.Client) error {
 		}
 		if os.Getenv("JIG_VERCEL_APIKEY") != "" {
 			commands = append(commands,
-				"--certificatesresolvers.myresolver.acme.dnschallenge.provider=vercel",
-				"--certificatesresolvers.myresolver.acme.dnschallenge.delaybeforecheck=2")
+				"--certificatesresolvers.defaultresolver.acme.dnschallenge.provider=vercel",
+				"--certificatesresolvers.defaultresolver.acme.dnschallenge.delaybeforecheck=2")
 			envs = append(envs, "VERCEL_API_TOKEN="+os.Getenv("JIG_VERCEL_APIKEY"))
 		} else {
 			commands = append(commands,

@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "JigDeployment",
+  "type": "object",
+  "required": [
+    "name"
+  ],
+  "properties": {
+    "name": {
+      "description": "The unique deployment name",
+      "type": "string"
+    },
+    "port": {
+      "description": "The port to expose the service on",
+      "type": "integer"
+    },
+    "restartPolicy": {
+      "description": "The restart policy for the service",
+      "type": "string"
+    },
+    "domain": {
+      "description": "Domain the service is hosted on",
+      "type": "string"
+    },
+    "hostname": {
+      "description": "Intername hostname of the service",
+      "type": "string"
+    },
+    "rule": {
+      "description": "Traefik rule to use for the service intead of just the domain\n\nExample: \"Host(`example.com`) && PathPrefix(`/api`)\"",
+      "type": "string"
+    },
+    "envs": {
+      "description": "Map of environment variables to set for the service, secret values start with @",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "middlewares": {
+      "description": "Middlewares to use for the service",
+      "type": "object",
+      "properties": {
+        "noTLS": {
+          "description": "Disable TLS for the service",
+          "type": "boolean"
+        },
+        "noHTTP": {
+          "description": "Disable HTTP for the service",
+          "type": "boolean"
+        },
+        "rateLimiting": {
+          "description": "Limit the rate of requests to the service",
+          "type": "object",
+          "properties": {
+            "average": {
+              "type": "integer"
+            },
+            "burst": {
+              "type": "integer"
+            }
+          }
+        },
+        "stripPrefix": {
+          "description": "Strip prefixes from the request path",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "addPrefix": {
+          "description": "Add a prefix to the request path",
+          "type": "string"
+        },
+        "compression": {
+          "description": "Gzip compress the response",
+          "type": "boolean"
+        },
+        "basicAuth": {
+          "description": "Basic auth",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

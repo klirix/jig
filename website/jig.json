@@ -1,7 +1,9 @@
 {
+  "$schema": "https://deploywithjig.askh.at/jsonschema.json",
   "name": "jig-website",
   "port": 80,
   "restartPolicy": "on-failure:2",
-  "domain": "jigweblmao.askh.at",
+  "domain": "deploywithjig.askh.at",
+  "middlewares": {},
   "envs": {}
 }
