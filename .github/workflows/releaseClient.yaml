@@ -23,10 +23,14 @@ jobs:
       - name: Build for linux
         run: GOOS=darwin GOARCH=arm64 go build -o jig-linux pkgs/client/client.go
 
+      - name: Set outputs
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "Release - ${{ github.sha }}"
+          tag_name: Release-${{ steps.vars.outputs.sha_short }}
           files: |
             jig-darwin
             jig-linux
