@@ -18,6 +18,7 @@ type DeploymentMiddleares struct {
 	StripPrefix  *[]string            `json:"stripPrefix"`
 	AddPrefix    *string              `json:"addPrefix"`
 	Compression  *bool                `json:"compression"`
+	BasicAuth    *[]string            `json:"basicAuth"`
 }
 
 type RateLimitMiddleware struct {

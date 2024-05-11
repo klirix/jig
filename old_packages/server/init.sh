@@ -15,6 +15,11 @@ if [[ -z "$JIG_DOMAIN" ]]; then
   read -r JIG_DOMAIN
 fi
 
+if [[ -z "$JIG_VERCEL_APIKEY" ]]; then
+  echo -n "Enter vercel key: "
+  read -r JIG_VERCEL_APIKEY
+fi
+
 docker stop jig
 docker rm jig
 
@@ -23,7 +28,7 @@ docker pull askhatsaiapov/jig:latest
 
 
 docker run -d --name jig \
-  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET  -e JIG_DOMAIN=$JIG_DOMAIN \
+  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_SECRET=$JIG_SECRET -e JIG_VERCEL_APIKEY=$JIG_VERCEL_APIKEY -e JIG_DOMAIN=$JIG_DOMAIN \
   --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
   --label "traefik.http.middlewares.https-only.redirectscheme.permanent=true" \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
@@ -39,4 +44,4 @@ docker run -d --name jig \
   askhatsaiapov/jig:latest
 echo 
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
-docker exec jig node makeKey.js
+docker exec jig server makeKey

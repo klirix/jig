@@ -100,6 +100,10 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 		labels["traefik.http.middlewares.stripPrefix.stripprefix.prefixes"] = strings.Join(*config.Middlewares.StripPrefix, ",")
 		middlewares = append(middlewares, "stripPrefix")
 	}
+	if config.Middlewares.BasicAuth != nil {
+		labels["traefik.http.middlewares.basicAuth.basicauth.users"] = strings.Join(*config.Middlewares.BasicAuth, ",")
+		middlewares = append(middlewares, "basicAuth")
+	}
 	if config.Middlewares.RateLimiting != nil {
 		maps.Copy(labels, map[string]string{
 			"traefik.http.middlewares.ratelimit.ratelimit.average": fmt.Sprint(config.Middlewares.RateLimiting.Average),

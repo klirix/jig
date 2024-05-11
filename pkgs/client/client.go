@@ -328,6 +328,15 @@ func main() {
 				Action: loginCommand,
 			},
 			{
+				Name:  "ls",
+				Usage: "List deployments",
+				Flags: []cli.Flag{
+					tokenFlag,
+					endpointFlag,
+				},
+				Action: listDeployments,
+			},
+			{
 				Name: "deployments",
 				Subcommands: []*cli.Command{
 					{

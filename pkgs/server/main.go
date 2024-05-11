@@ -165,7 +165,7 @@ func main() {
 						println("Your new jwt secret key ✨🔑:")
 					}
 
-					fmt.Printf("%s+%s\n", os.Getenv("JIG_DOMAIN"), ss)
+					fmt.Printf("https://%s+%s\n", os.Getenv("JIG_DOMAIN"), ss)
 					return nil
 				},
 			},
