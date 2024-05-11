@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"os"
@@ -25,23 +26,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
-
-func makeLabels(name string, rule string) map[string]string {
-	return map[string]string{
-		"traefik.enable": "true",
-		"traefik.http.middlewares.https-only.redirectscheme.permanent": "true",
-		"traefik.http.middlewares.https-only.redirectscheme.scheme":    "https",
-		"traefik.http.routers." + name + `.rule`:                       rule,
-		"traefik.http.routers." + name + `.middlewares`:                "https-only",
-		"traefik.http.routers." + name + `.entrypoints`:                "web",
-		"traefik.http.routers." + name + `-secure.rule`:                rule,
-		"traefik.http.routers." + name + `-secure.tls.certresolver`:    "defaultresolver",
-		"traefik.http.routers." + name + `-secure.tls`:                 "true",
-		"traefik.http.routers." + name + `-secure.entrypoints`:         "websecure",
-		"traefik.docker.network":                                       "jig",
-		"jig.name":                                                     name,
-	}
-}
 
 func makeEnvs(newenvs map[string]string, secretDb *Secrets) ([]string, error) {
 	resolvedEnvs := []string{}
@@ -62,7 +46,7 @@ func makeEnvs(newenvs map[string]string, secretDb *Secrets) ([]string, error) {
 }
 
 func makeRule(config jigtypes.DeploymentConfig) string {
-	switch true {
+	switch {
 	case config.Rule != "":
 		return config.Rule
 	case config.Domain != "":
@@ -70,6 +54,63 @@ func makeRule(config jigtypes.DeploymentConfig) string {
 	default:
 		return "No-HTTP"
 	}
+}
+
+func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
+	name := config.Name
+	rule := makeRule(config)
+	labels := map[string]string{
+		"traefik.docker.network": "jig",
+		"jig.name":               name,
+	}
+	middlewares := []string{}
+	keepTLS := config.Middlewares.NoTLS == nil || !*config.Middlewares.NoTLS
+	keepHTTP := config.Middlewares.NoHTTP == nil || !*config.Middlewares.NoHTTP
+
+	// No need to have HTTPS if HTTP is disabled as well
+	if keepTLS && keepHTTP {
+		maps.Copy(labels, map[string]string{
+			"traefik.http.middlewares.https-only.redirectscheme.permanent": "true",
+			"traefik.http.middlewares.https-only.redirectscheme.scheme":    "https",
+			"traefik.http.routers." + name + `-secure.rule`:                rule,
+			"traefik.http.routers." + name + `-secure.tls.certresolver`:    "defaultresolver",
+			"traefik.http.routers." + name + `-secure.tls`:                 "true",
+			"traefik.http.routers." + name + `-secure.entrypoints`:         "websecure",
+		})
+		middlewares = append(middlewares, "https-only")
+	}
+	if keepHTTP {
+		maps.Copy(labels, map[string]string{
+			"traefik.enable":                                "true",
+			"traefik.http.routers." + name + `.rule`:        rule,
+			"traefik.http.routers." + name + `.entrypoints`: "web",
+		})
+	} else {
+		labels["traefik.enable"] = "false"
+	}
+	if config.Middlewares.Compression != nil && *config.Middlewares.Compression {
+		labels["traefik.http.middlewares.compress.compress"] = "true"
+		middlewares = append(middlewares, "compress")
+	}
+	if config.Middlewares.AddPrefix != nil {
+		labels["traefik.http.middlewares.addPrefix.addprefix"] = *config.Middlewares.AddPrefix
+		middlewares = append(middlewares, "addPrefix")
+	}
+	if config.Middlewares.StripPrefix != nil {
+		labels["traefik.http.middlewares.stripPrefix.stripprefix.prefixes"] = strings.Join(*config.Middlewares.StripPrefix, ",")
+		middlewares = append(middlewares, "stripPrefix")
+	}
+	if config.Middlewares.RateLimiting != nil {
+		maps.Copy(labels, map[string]string{
+			"traefik.http.middlewares.ratelimit.ratelimit.average": fmt.Sprint(config.Middlewares.RateLimiting.Average),
+			"traefik.http.middlewares.ratelimit.ratelimit.burst":   fmt.Sprint(config.Middlewares.RateLimiting.Burst),
+		})
+		middlewares = append(middlewares, "ratelimit")
+	}
+	if len(middlewares) > 0 {
+		labels["traefik.http.routers."+name+`.middlewares`] = strings.Join(middlewares, ", ")
+	}
+	return labels
 }
 
 func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
@@ -198,7 +239,9 @@ func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
 			}
 
 			exposedPorts := map[nat.Port]struct{}{}
-			exposedPorts[nat.Port(fmt.Sprint(config.Port)+"/tcp")] = struct{}{}
+			if config.Port != 0 {
+				exposedPorts[nat.Port(fmt.Sprint(config.Port)+"/tcp")] = struct{}{}
+			}
 
 			envs, err := makeEnvs(config.Envs, secretDb)
 			if err != nil {
@@ -225,17 +268,22 @@ func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
 				}
 			}
 
+			internalHostname := config.Name
+			if config.Hostname != "" {
+				internalHostname = config.Hostname
+			}
 			_, err = cli.ContainerCreate(context.Background(), &container.Config{
 				ExposedPorts: exposedPorts,
 				Env:          envs,
 				Image:        config.Name + ":latest",
-				Labels:       makeLabels(config.Name, makeRule(config)),
+				Labels:       makeLabels(config),
+				Volumes:      map[string]struct{}{},
 			}, &container.HostConfig{
 				RestartPolicy: restartPolicy,
 			}, &network.NetworkingConfig{
 				EndpointsConfig: map[string]*network.EndpointSettings{
 					"jig": {
-						Aliases: []string{config.Name},
+						Aliases: []string{internalHostname},
 					},
 				},
 			}, &v1.Platform{}, config.Name)

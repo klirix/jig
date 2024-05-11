@@ -1,12 +1,28 @@
 package jigtypes
 
 type DeploymentConfig struct {
-	Name          string            `json:"name"`
-	Port          int               `json:"port"`
-	RestartPolicy string            `json:"restartPolicy"`
-	Domain        string            `json:"domain"`
-	Rule          string            `json:"rule"`
-	Envs          map[string]string `json:"envs"`
+	Name          string               `json:"name"`
+	Port          int                  `json:"port"`
+	RestartPolicy string               `json:"restartPolicy"`
+	Domain        string               `json:"domain"`
+	Hostname      string               `json:"hostname"`
+	Rule          string               `json:"rule"`
+	Envs          map[string]string    `json:"envs"`
+	Middlewares   DeploymentMiddleares `json:"middlewares"`
+}
+
+type DeploymentMiddleares struct {
+	NoTLS        *bool                `json:"noTLS"`
+	NoHTTP       *bool                `json:"noHTTP"`
+	RateLimiting *RateLimitMiddleware `json:"rateLimiting"`
+	StripPrefix  *[]string            `json:"stripPrefix"`
+	AddPrefix    *string              `json:"addPrefix"`
+	Compression  *bool                `json:"compression"`
+}
+
+type RateLimitMiddleware struct {
+	Average int `json:"average"`
+	Burst   int `json:"burst"`
 }
 
 type Deployment struct {
