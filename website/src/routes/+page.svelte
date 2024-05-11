@@ -103,10 +103,7 @@
 			</p>
 			<p>Load and run startup\update script below</p>
 			<div class="my-5">
-				<CodeBlock
-					language="bash"
-					code="wget -q https://deploywithjig.askh.at/install.sh && bash install.sh && rm install.sh"
-				/>
+				<CodeBlock language="bash" code="curl -fsSL https://deploywithjig.askh.at/init.sh | bash" />
 			</div>
 			<p class="">
 				This will load traefik, jig, ask you for an email, jwt signing key, launch everything and
@@ -121,22 +118,12 @@
 		<div class="px-2 md:px-0 mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
 			<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Client setup</h3>
 			<p>Any node package manager is a prerequisite</p>
-			<div class="my-5" />
-			<TabGroup>
-				<Tab bind:group={tabSet} name="tab1" value={0}>npm</Tab>
-				<Tab bind:group={tabSet} name="tab2" value={1}>pnpm</Tab>
-				<Tab bind:group={tabSet} name="tab3" value={2}>yarn</Tab>
-				<!-- Tab Panels --->
-				<svelte:fragment slot="panel">
-					{#if tabSet === 0}
-						<CodeBlock language="bash" code="npm install -g jig-client" />
-					{:else if tabSet === 1}
-						<CodeBlock language="bash" code="pnpm add -g jig-client" />
-					{:else if tabSet === 2}
-						<CodeBlock language="bash" code="yarn global add jig-client" />
-					{/if}
-				</svelte:fragment>
-			</TabGroup>
+			<div class="my-5">
+				<CodeBlock
+					language="bash"
+					code="curl -fsSL https://deploywithjig.askh.at/install.sh | bash"
+				/>
+			</div>
 			<p class="">
 				After that just plug in the command you received in Server setup stage and start deploying
 			</p>
