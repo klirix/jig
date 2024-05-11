@@ -1,6 +1,0 @@
-node_modules
-example
-
-# Development stuff
-.env
-secrets.json
