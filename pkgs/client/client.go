@@ -326,7 +326,6 @@ func deployComment(c *cli.Context) error {
 			jsonMessage.Display(os.Stdout, true)
 		}
 	}
-
 	return nil
 }
 
