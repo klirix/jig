@@ -20,8 +20,10 @@ if [[ -z "$JIG_VERCEL_APIKEY" ]]; then
   read -r JIG_VERCEL_APIKEY
 fi
 
-docker stop jig
-docker rm jig
+docker stop jig 2>/dev/null
+docker rm jig 2>/dev/null
+docker stop jig 2>/dev/null
+docker rm jig 2>/dev/null
 
 docker pull traefik:2.11
 docker pull askhatsaiapov/jig:latest
