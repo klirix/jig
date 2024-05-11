@@ -23,7 +23,7 @@ func TestSecrets(t *testing.T) {
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 
 	router := mainRouter(cli, db)
-	t.Run("TestSecretInspect", func(t *testing.T) {
+	t.Run("inspect endpoint works", func(t *testing.T) {
 
 		db.Insert("test", "testval")
 		defer db.Delete("test")
@@ -53,7 +53,7 @@ func TestSecrets(t *testing.T) {
 		}
 	})
 
-	t.Run("TestSecretInspect404", func(t *testing.T) {
+	t.Run("inspect endpoint returns 404 ", func(t *testing.T) {
 
 		// Start the server
 		req := httptest.NewRequest(http.MethodGet, "/secrets/test", nil)
@@ -71,7 +71,7 @@ func TestSecrets(t *testing.T) {
 		}
 	})
 
-	t.Run("TestSecretCreate", func(t *testing.T) {
+	t.Run("create secret endpoint works", func(t *testing.T) {
 
 		testval := uuid.New().String()
 		name := "test-" + uuid.New().String()
@@ -106,7 +106,7 @@ func TestSecrets(t *testing.T) {
 		}
 	})
 
-	t.Run("TestSecretDelete", func(t *testing.T) {
+	t.Run("secret deletion endpoint works", func(t *testing.T) {
 
 		name := "test-" + uuid.New().String()
 		db.Insert(name, "testval")
@@ -125,16 +125,13 @@ func TestSecrets(t *testing.T) {
 			t.FailNow()
 		}
 
-		_, found, err := db.Get(name)
+		_, found, _ := db.Get(name)
 		if found {
-			t.Errorf("Expected secret to be deleted, but it still exists")
-		}
-		if err == nil {
 			t.Errorf("Expected secret to be deleted, but it still exists")
 		}
 	})
 
-	t.Run("TestSecretsList", func(t *testing.T) {
+	t.Run("list secrets endpoint", func(t *testing.T) {
 
 		// Insert some secrets
 		db.Insert("secret1", "value1")
