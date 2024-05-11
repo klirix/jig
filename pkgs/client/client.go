@@ -334,20 +334,21 @@ func main() {
 		Commands: []*cli.Command{
 			{
 				Name:  "init",
-				Usage: "Login to the Jig server",
+				Usage: "Initiate jig in the directory",
 				Args:  false,
 				Action: func(ctx *cli.Context) error {
 					if _, err := os.Stat("./jig.json"); err == nil {
 						log.Fatal("jig.json already exists")
 					}
 					currentDir, err := os.Getwd()
+					dirName := filepath.Base(currentDir)
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
 					err = os.WriteFile("./jig.json", []byte(`{
   "$schema": "https://deploywithjig.askh.at/jsonschema.json",
-  "name": "`+currentDir+`"
-          }`), 0644)
+  "name": "`+dirName+`"
+}`), 0644)
 					if err != nil {
 						log.Fatal("Error writing jig.json: ", err)
 					}
