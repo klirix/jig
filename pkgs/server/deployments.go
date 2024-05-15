@@ -122,8 +122,14 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 	return labels
 }
 
-func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
+type DeploymentsRouter struct {
+	cli       *client.Client
+	secret_db *Secrets
+}
 
+func (dr DeploymentsRouter) Router() func(r chi.Router) {
+	cli := dr.cli
+	secretDb := dr.secret_db
 	return func(r chi.Router) {
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 

@@ -248,9 +248,9 @@ func mainRouter(cli *client.Client, secret_db *Secrets) chi.Router {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.With(ensureAuth).Route("/secrets", SecretRouter(secret_db))
+	r.With(ensureAuth).Route("/secrets", SecretRouter{secret_db}.Router())
 
-	r.With(ensureAuth).Route("/deployments", DeploymentsRouter(cli, secret_db))
+	r.With(ensureAuth).Route("/deployments", DeploymentsRouter{cli, secret_db}.Router())
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hewwo!"))

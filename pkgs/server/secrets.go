@@ -9,7 +9,12 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func SecretRouter(secret_db *Secrets) func(r chi.Router) {
+type SecretRouter struct {
+	secret_db *Secrets
+}
+
+func (sr SecretRouter) Router() func(r chi.Router) {
+	secret_db := sr.secret_db
 	return func(r chi.Router) {
 		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
 
