@@ -89,27 +89,32 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 		labels["traefik.enable"] = "false"
 	}
 	if config.Middlewares.Compression != nil && *config.Middlewares.Compression {
+		// No need to rename compress middleware since it's same everywhere
 		labels["traefik.http.middlewares.compress.compress"] = "true"
 		middlewares = append(middlewares, "compress")
 	}
 	if config.Middlewares.AddPrefix != nil {
-		labels["traefik.http.middlewares.addPrefix.addprefix"] = *config.Middlewares.AddPrefix
-		middlewares = append(middlewares, "addPrefix")
+		middlewareName := "addPrefix-" + name
+		labels["traefik.http.middlewares."+middlewareName+".addprefix"] = *config.Middlewares.AddPrefix
+		middlewares = append(middlewares, middlewareName)
 	}
 	if config.Middlewares.StripPrefix != nil {
-		labels["traefik.http.middlewares.stripPrefix.stripprefix.prefixes"] = strings.Join(*config.Middlewares.StripPrefix, ",")
-		middlewares = append(middlewares, "stripPrefix")
+		middlewareName := "stripPrefix-" + name
+		labels["traefik.http.middlewares."+middlewareName+".stripprefix.prefixes"] = strings.Join(*config.Middlewares.StripPrefix, ",")
+		middlewares = append(middlewares, middlewareName)
 	}
 	if config.Middlewares.BasicAuth != nil {
-		labels["traefik.http.middlewares.basicAuth.basicauth.users"] = strings.Join(*config.Middlewares.BasicAuth, ",")
-		middlewares = append(middlewares, "basicAuth")
+		middlewareName := "basicAuth-" + name
+		labels["traefik.http.middlewares."+middlewareName+".basicauth.users"] = strings.Join(*config.Middlewares.BasicAuth, ",")
+		middlewares = append(middlewares, middlewareName)
 	}
 	if config.Middlewares.RateLimiting != nil {
+		middlewareName := "ratelimit-" + name
 		maps.Copy(labels, map[string]string{
-			"traefik.http.middlewares.ratelimit.ratelimit.average": fmt.Sprint(config.Middlewares.RateLimiting.Average),
-			"traefik.http.middlewares.ratelimit.ratelimit.burst":   fmt.Sprint(config.Middlewares.RateLimiting.Burst),
+			"traefik.http.middlewares." + middlewareName + ".ratelimit.average": fmt.Sprint(config.Middlewares.RateLimiting.Average),
+			"traefik.http.middlewares." + middlewareName + ".ratelimit.burst":   fmt.Sprint(config.Middlewares.RateLimiting.Burst),
 		})
-		middlewares = append(middlewares, "ratelimit")
+		middlewares = append(middlewares, middlewareName)
 	}
 	if len(middlewares) > 0 {
 		labels["traefik.http.routers."+name+`.middlewares`] = strings.Join(middlewares, ", ")
@@ -276,6 +281,7 @@ func DeploymentsRouter(cli *client.Client, secretDb *Secrets) func(chi.Router) {
 			if config.Hostname != "" {
 				internalHostname = config.Hostname
 			}
+
 			_, err = cli.ContainerCreate(context.Background(), &container.Config{
 				ExposedPorts: exposedPorts,
 				Env:          envs,
