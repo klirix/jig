@@ -16,7 +16,7 @@ Installation is in two steps:
 Docker is a prerequisite, [so ensure docker is available and running on your server](https://docs.docker.com/engine/install/)
 
 ```bash
-wget -q https://deploywithjig.askh.at/install.sh && bash install.sh && rm install.sh
+curl -fsSL https://deploywithjig.askh.at/init.sh | bash
 ```
 
 This will load traefik, jig, ask you for an email, jwt signing key, launch everything and spit out a command to run on your machine to login
