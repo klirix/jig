@@ -585,22 +585,6 @@ func main() {
 				},
 			},
 		},
-		Action: deployComment,
-		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:    "verbose",
-				Aliases: []string{"v"},
-				Usage:   "Verbose output",
-				Value:   false,
-			},
-			&cli.BoolFlag{
-				Name:    "local",
-				Aliases: []string{"l"},
-				Usage:   "Build the image locally",
-				Value:   false,
-			},
-			tokenFlag,
-		},
 	}
 
 	if err := app.Run(os.Args); err != nil {
