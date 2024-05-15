@@ -163,7 +163,7 @@ func main() {
 						return err
 					}
 					if !ctx.Bool("short") {
-						println("Your new jwt secret key ✨🔑:")
+						print("Your new jwt secret key ✨🔑:\njig login ")
 					}
 
 					fmt.Printf("https://%s+%s\n", os.Getenv("JIG_DOMAIN"), ss)
