@@ -28,7 +28,7 @@ Login command will look something like `jig login loooooong+code` keep it for la
 Any node package manager is a prerequisite
 
 ```bash
-npm install -g jig-client
+curl -fsSL https://deploywithjig.askh.at/install.sh | bash
 ```
 
 Plug in your login command you got in previous steps with
@@ -43,13 +43,19 @@ Then initiate a project and create a config in your project directory with
 jig init
 ```
 
-It will try to figure out what kind of project you're running and add a pre-made `Dockerfile` for your convenience, but you can create one yourself
-
-After that plug in the `jig login ...` command you received server side and you should be ready to go with
+Deploy your project with a single command. Jig will pack the project, send it to the server and build it remotely
 
 ```bash
 jig deploy
 ```
+
+Or build it locally using docker and deploy the image to the server. This is useful for CI and to save resources on the server
+
+```bash
+jig deploy -l
+```
+
+Let Traefik fetch certificates if you deploy with TLS enabled and you're done
 
 ### TODOs
 

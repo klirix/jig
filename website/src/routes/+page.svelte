@@ -134,11 +134,16 @@
 			<p>Initiate jig project and create the config</p>
 			<CodeBlock language="bash" code="jig init" />
 			<p>
-				It will try to figure out what kind of project you're running and add a pre-made
-				<code>Dockerfile</code> for your convenience, but you can create one yourself
+				Deploy your project with a single command. Jig will pack the project, send it to the server
+				and build it remotely
 			</p>
 			<CodeBlock language="bash" code="jig deploy" />
-			<p>That's it!</p>
+			<p>
+				Or build it locally using docker and deploy the image to the server. This is useful for CI
+				and to save resources on the server
+			</p>
+			<CodeBlock language="bash" code="jig deploy -l" />
+			<p>Let Traefik fetch certificates if you deploy with TLS enabled and you're done</p>
 		</div>
 	</section>
 </main>
