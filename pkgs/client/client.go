@@ -674,6 +674,10 @@ func DeleteSecret(ctx *cli.Context) error {
 
 	name := ctx.Args().Get(0)
 
+	if name == "" {
+		log.Fatal("Secret name is required")
+	}
+
 	req, _ := createRequest("DELETE", "/secrets/"+name)
 
 	resp, err := httpClient.Do(req)
@@ -734,11 +738,11 @@ func AddSecret(ctx *cli.Context) error {
 	}
 
 	if bodyToSend.Name == "" {
-		log.Fatal(color.RedString("Secret name is required"))
+		log.Fatal("Secret name is required")
 	}
 
 	if bodyToSend.Value == "" {
-		log.Fatal(color.RedString("Secret value is required"))
+		log.Fatal("Secret value is required")
 	}
 
 	bodyBytes, err := json.Marshal(bodyToSend)
