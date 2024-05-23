@@ -566,9 +566,10 @@ func main() {
 					},
 
 					{
-						Name:  "add",
-						Args:  true,
-						Usage: "add a secret",
+						Name:      "add",
+						Args:      true,
+						ArgsUsage: "name value",
+						Usage:     "add a secret",
 						Flags: []cli.Flag{
 							tokenFlag,
 						},
@@ -730,6 +731,14 @@ func AddSecret(ctx *cli.Context) error {
 	bodyToSend := jigtypes.NewSecretBody{
 		Name:  ctx.Args().Get(0),
 		Value: ctx.Args().Get(1),
+	}
+
+	if bodyToSend.Name == "" {
+		log.Fatal(color.RedString("Secret name is required"))
+	}
+
+	if bodyToSend.Value == "" {
+		log.Fatal(color.RedString("Secret value is required"))
 	}
 
 	bodyBytes, err := json.Marshal(bodyToSend)
