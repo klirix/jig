@@ -4,9 +4,14 @@ noun
 
 &nbsp; _a device that holds a piece of work and guides the tool operating on it._
 
+## !!!Warning!!!
+
+The package is both experimental AND unstable
+New features likely will break existing setups unless both client and server are not in sync
+
 ## Installation
 
-Installation is in two steps:
+Installation is done in two steps:
 
 1. Server setup: Run a startup script on the server to pull all relevant images and take off
 2. Client setup: Download a client and get authentication ready
