@@ -180,11 +180,13 @@ func loginCommand(c *cli.Context) error {
 	return nil
 }
 
+const DEFAULT_CONFIG = "./jig.json"
+
 func deployComment(c *cli.Context) error {
 	if c.String("token") != "" {
 		config = updateConfigUsingToken(c.String("token"))
 	}
-	configFile := "./jig.json"
+	configFile := DEFAULT_CONFIG // Default config file
 	if c.String("config") != "" {
 		configFile = c.String("config")
 	}
@@ -702,6 +704,10 @@ func InspectSecret(ctx *cli.Context) error {
 	}
 
 	name := ctx.Args().Get(0)
+
+	if name == "" {
+		log.Fatal("Secret name is required")
+	}
 
 	req, _ := createRequest("GET", "/secrets/"+name)
 
