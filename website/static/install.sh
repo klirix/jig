@@ -7,8 +7,7 @@ case $(uname -ms) in
     ;;
 esac
 
-bun_uri=https://github.com/klirix/jig/releases/download/master/jig-$target
-
+bun_uri=https://github.com/klirix/jig/releases/download/client-release/jig-$target
 curl --fail --location --progress-bar --output jig $bun_uri
 chmod +x jig
 
