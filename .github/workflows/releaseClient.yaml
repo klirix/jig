@@ -30,7 +30,7 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: master
+          tag_name: client-release
           files: |
             jig-darwin
             jig-linux
