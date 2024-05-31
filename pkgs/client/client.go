@@ -148,6 +148,7 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 
 func updateConfigUsingToken(token string) Config {
 	strings.Split(token, "+")
+
 	newConfig := Config{
 		Endpoint: strings.Split(token, "+")[0],
 		Token:    strings.Split(token, "+")[1],
