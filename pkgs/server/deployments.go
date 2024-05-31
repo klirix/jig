@@ -288,12 +288,20 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				internalHostname = config.Hostname
 			}
 
+			volumes := map[string]struct{}{}
+
+			if config.Volumes != nil {
+				for _, volume := range config.Volumes {
+					volumes[volume] = struct{}{}
+				}
+			}
+
 			_, err = cli.ContainerCreate(context.Background(), &container.Config{
 				ExposedPorts: exposedPorts,
 				Env:          envs,
 				Image:        config.Name + ":latest",
 				Labels:       makeLabels(config),
-				Volumes:      map[string]struct{}{},
+				Volumes:      volumes,
 			}, &container.HostConfig{
 				RestartPolicy: restartPolicy,
 			}, &network.NetworkingConfig{

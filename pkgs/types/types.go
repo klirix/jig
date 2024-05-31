@@ -8,6 +8,7 @@ type DeploymentConfig struct {
 	Hostname      string               `json:"hostname"`
 	Rule          string               `json:"rule"`
 	Envs          map[string]string    `json:"envs"`
+	Volumes       []string             `json:"volumes"`
 	Middlewares   DeploymentMiddleares `json:"middlewares"`
 }
 
