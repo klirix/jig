@@ -324,6 +324,7 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 						return
 					}
 					mounts = append(mounts, mount.Mount{
+						Type:   mount.TypeBind,
 						Source: parts[0],
 						Target: parts[1],
 					})
