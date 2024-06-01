@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
@@ -59,9 +60,18 @@ func makeRule(config jigtypes.DeploymentConfig) string {
 func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 	name := config.Name
 	rule := makeRule(config)
+
+	var configString string
+	if configStringBytes, err := json.Marshal(config); err != nil {
+		configString = ""
+	} else {
+		configString = string(configStringBytes)
+	}
+
 	labels := map[string]string{
 		"traefik.docker.network": "jig",
 		"jig.name":               name,
+		"jig.config":             configString,
 	}
 	middlewares := []string{}
 	keepTLS := config.Middlewares.NoTLS == nil || !*config.Middlewares.NoTLS
@@ -187,6 +197,22 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				return
 			}
 
+			// Check if image already exists
+			images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
+			if err != nil {
+				log.Println("Failed to list images", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for _, image := range images {
+				for _, tag := range image.RepoTags {
+					if tag == config.Name+":latest" {
+						cli.ImageTag(context.Background(), tag, config.Name+":prev")
+						w.Write([]byte("Image exists, tagging as prev for rollback\n"))
+					}
+				}
+			}
+
 			// Load image from body
 			if isJigImage {
 				res, err := cli.ImageLoad(context.Background(), r.Body, true)
@@ -288,11 +314,19 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				internalHostname = config.Hostname
 			}
 
-			volumes := map[string]struct{}{}
+			mounts := []mount.Mount{}
 
 			if config.Volumes != nil {
 				for _, volume := range config.Volumes {
-					volumes[volume] = struct{}{}
+					parts := strings.Split(volume, ":")
+					if parts[0] == "" || parts[1] == "" {
+						http.Error(w, "Invalid volume", http.StatusBadRequest)
+						return
+					}
+					mounts = append(mounts, mount.Mount{
+						Source: parts[0],
+						Target: parts[1],
+					})
 				}
 			}
 
@@ -301,9 +335,9 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				Env:          envs,
 				Image:        config.Name + ":latest",
 				Labels:       makeLabels(config),
-				Volumes:      volumes,
 			}, &container.HostConfig{
 				RestartPolicy: restartPolicy,
+				Mounts:        mounts,
 			}, &network.NetworkingConfig{
 				EndpointsConfig: map[string]*network.EndpointSettings{
 					"jig": {
@@ -355,6 +389,55 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 			http.Error(w, "Container not found", http.StatusNotFound)
 		})
 
+		r.Post("/{name}/rollback", func(w http.ResponseWriter, r *http.Request) {
+
+			name := r.PathValue("name")
+			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+				All: true,
+			})
+
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			var containerID string = ""
+
+			for _, containerInfo := range containers {
+				if containerInfo.Labels["jig.name"] == name {
+					containerID = containerInfo.ID
+				}
+			}
+
+			if containerID == "" {
+				log.Printf("Container not found for rollback: %s", name)
+				http.Error(w, "Container not found", http.StatusNotFound)
+				return
+			}
+
+			images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
+			if err != nil {
+				log.Println("Failed to list images", err.Error())
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			for _, image := range images {
+				for _, tag := range image.RepoTags {
+					if tag == name+":prev" {
+						cli.ContainerStop(context.Background(), containerID, container.StopOptions{})
+						cli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{})
+						cli.ImageRemove(context.Background(), name+":latest", types.ImageRemoveOptions{})
+						cli.ImageTag(context.Background(), tag, name+":latest")
+						w.WriteHeader(http.StatusNoContent)
+					}
+				}
+			}
+
+			// Get the image ID of the previous image
+
+		})
+
 		r.Get("/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
 
 			name := r.PathValue("name")
@@ -388,7 +471,9 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 		})
 
 		r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{Filters: filters.NewArgs(filters.KeyValuePair{Key: "label", Value: "jig.name"})})
+			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+				Filters: filters.NewArgs(filters.KeyValuePair{Key: "label", Value: "jig.name"}),
+			})
 			if err != nil {
 				log.Print("Failed to list the containers")
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -396,6 +481,7 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 			var allStats []jigtypes.Stats = make([]jigtypes.Stats, 0, len(containers))
 			for _, container := range containers {
 				stats, err := cli.ContainerStatsOneShot(context.Background(), container.ID)
+
 				if err != nil {
 					log.Print("Failed to get container stats info")
 					http.Error(w, err.Error(), http.StatusInternalServerError)
