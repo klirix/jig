@@ -99,7 +99,7 @@ func ensureTraefikRunning(cli *client.Client) error {
 			ExposedPorts: map[nat.Port]struct{}{
 				"80/tcp":   {},
 				"443/tcp":  {},
-				"8081/tcp": {},
+				"8080/tcp": {},
 			},
 			Env: envs,
 		}, &container.HostConfig{
@@ -113,7 +113,7 @@ func ensureTraefikRunning(cli *client.Client) error {
 			PortBindings: map[nat.Port][]nat.PortBinding{
 				"80/tcp":   {{HostPort: "80/tcp"}},
 				"443/tcp":  {{HostPort: "443/tcp"}},
-				"8081/tcp": {{HostPort: "8081/tcp"}},
+				"8080/tcp": {{HostPort: "8080/tcp"}},
 			},
 		}, &network.NetworkingConfig{}, &v1.Platform{}, "traefik")
 
