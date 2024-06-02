@@ -75,6 +75,7 @@ func ensureTraefikRunning(cli *client.Client) error {
 		envs := []string{}
 		commands := []string{
 			"--api.insecure=true",
+			"--log.level=DEBUG",
 			"--entrypoints.web.address=:80",
 			"--entrypoints.websecure.address=:443",
 			"--providers.docker=true",
