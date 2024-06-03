@@ -128,6 +128,7 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 	}
 	if len(middlewares) > 0 {
 		labels["traefik.http.routers."+name+`.middlewares`] = strings.Join(middlewares, ", ")
+		labels["traefik.http.routers."+name+`-secure.middlewares`] = strings.Join(middlewares, ", ")
 	}
 	return labels
 }
