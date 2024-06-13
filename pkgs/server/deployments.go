@@ -466,7 +466,6 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				http.Error(w, "Failed to remove old container", http.StatusInternalServerError)
 				return
 			}
-			// Get the image ID of the previous image
 
 		})
 
