@@ -259,24 +259,47 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				}
 			}
 
-			// Check if container already exists
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				All: true,
-			})
+			// Check if rollback container already exists
+			rollbackContainer, err := containerExistsWithName(cli, config.Name+"-prev")
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			for _, containerInfo := range containers {
-				if containerInfo.Labels["jig.name"] == config.Name {
-					if !isJigImage {
-						w.Write([]byte("\n{\"stream\": \"Container exists, stopping...\"}\n"))
-						w.(http.Flusher).Flush()
-					}
-					fmt.Printf("Container %s exists, stopping...\n", config.Name)
-					cli.ContainerStop(context.Background(), containerInfo.ID, container.StopOptions{})
-					fmt.Printf("Container %s exists, removing\n", config.Name)
-					cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{})
+			if rollbackContainer != nil {
+				if !isJigImage {
+					w.Write([]byte("\n{\"stream\": \"Rollback container exists, removing...\"}\n"))
+					w.(http.Flusher).Flush()
+				}
+				fmt.Printf("Rollback container %s exists, stopping...\n", config.Name)
+				cli.ContainerStop(context.Background(), rollbackContainer.ID, container.StopOptions{})
+				fmt.Printf("Rollback container %s exists, removing\n", config.Name)
+				cli.ContainerRemove(context.Background(), rollbackContainer.ID, container.RemoveOptions{})
+				return
+			}
+
+			currentContainer, err := containerExistsWithName(cli, config.Name)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if currentContainer != nil {
+				if !isJigImage {
+					w.Write([]byte("\n{\"stream\": \"Current container exists, renaming...\"}\n"))
+					w.(http.Flusher).Flush()
+				}
+				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
+				err = cli.ContainerRename(context.Background(), currentContainer.ID, config.Name+"-prev")
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					fmt.Printf("Failed to rename container %s...\n", config.Name)
+					return
+				}
+				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
+				err = cli.ContainerStop(context.Background(), currentContainer.ID, container.StopOptions{})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					fmt.Printf("Failed to stop container %s...\n", config.Name)
+					return
 				}
 			}
 
@@ -394,49 +417,55 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 		r.Post("/{name}/rollback", func(w http.ResponseWriter, r *http.Request) {
 
 			name := r.PathValue("name")
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				All: true,
-			})
 
+			currentDeployment, err := containerExistsWithName(cli, name)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			if currentDeployment == nil {
+				log.Printf("Original deployment not found: %s", name)
+				http.Error(w, "Deployment not found", http.StatusNotFound)
 				return
 			}
-
-			var containerID string = ""
-
-			for _, containerInfo := range containers {
-				if containerInfo.Labels["jig.name"] == name {
-					containerID = containerInfo.ID
-				}
+			rollbackTarget, err := containerExistsWithName(cli, name+"-prev")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
-
-			if containerID == "" {
+			if rollbackTarget == nil {
 				log.Printf("Container not found for rollback: %s", name)
-				http.Error(w, "Container not found", http.StatusNotFound)
+				http.Error(w, "Rollback targer doesn't exist", http.StatusNotFound)
 				return
 			}
 
-			images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
+			err = cli.ContainerStop(context.Background(), currentDeployment.ID, container.StopOptions{})
 			if err != nil {
-				log.Println("Failed to list images", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				http.Error(w, "Failed to stop container", http.StatusInternalServerError)
+				return
+			}
+			err = cli.ContainerRename(context.Background(), currentDeployment.ID, name+"-old")
+			if err != nil {
+				http.Error(w, "Failed to rename current container", http.StatusInternalServerError)
 				return
 			}
 
-			for _, image := range images {
-				for _, tag := range image.RepoTags {
-					if tag == name+":prev" {
-						cli.ContainerStop(context.Background(), containerID, container.StopOptions{})
-						cli.ContainerRemove(context.Background(), containerID, container.RemoveOptions{})
-						cli.ImageRemove(context.Background(), name+":latest", types.ImageRemoveOptions{})
-						cli.ImageTag(context.Background(), tag, name+":latest")
-						w.WriteHeader(http.StatusNoContent)
-					}
-				}
+			err = cli.ContainerRename(context.Background(), rollbackTarget.ID, name)
+			if err != nil {
+				http.Error(w, "Failed to rename rollback container", http.StatusInternalServerError)
+				return
+			}
+			err = cli.ContainerStart(context.Background(), name, container.StartOptions{})
+			if err != nil {
+				http.Error(w, "Failed to start rollback container, trying to restart current deployment", http.StatusInternalServerError)
+				cli.ContainerRename(context.Background(), currentDeployment.ID, name)
+				cli.ContainerStart(context.Background(), name, container.StartOptions{})
+				return
 			}
 
-			// Get the image ID of the previous image
+			err = cli.ContainerRemove(context.Background(), currentDeployment.ID, container.RemoveOptions{})
+			if err != nil {
+				http.Error(w, "Failed to remove old container", http.StatusInternalServerError)
+				return
+			}
 
 		})
 
@@ -533,4 +562,19 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 
 		})
 	}
+}
+
+func containerExistsWithName(cli *client.Client, name string) (*types.Container, error) {
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, containerInfo := range containers {
+		if containerInfo.Labels["jig.name"] == name {
+			return &containerInfo, nil
+		}
+	}
+	return nil, nil
 }

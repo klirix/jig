@@ -68,5 +68,5 @@ Let Traefik fetch certificates if you deploy with TLS enabled and you're done
 - [ ] Manage multiple servers 🌿
 - [x] Check docker container resource consumption 💸
 - [x] Fetch container logs (forgor to implement 💀), maybe attahcing to the container even 🤔
-- [ ] Deployment rollbacks?
+- [x] Deployment rollbacks!
 - [ ] DNS management (? maybe)
