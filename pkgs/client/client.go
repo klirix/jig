@@ -472,6 +472,42 @@ func main() {
 						},
 					},
 					{
+						Name:  "rollback",
+						Usage: "Rollback a deployment",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{
+								Name:    "verbose",
+								Aliases: []string{"v"},
+								Usage:   "Verbose output",
+								Value:   false,
+							},
+							tokenFlag,
+						},
+						Args:      true,
+						ArgsUsage: " name",
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config = updateConfigUsingToken(ctx.String("token"))
+							}
+							name := ctx.Args().First()
+							if name == "" {
+								log.Fatal("Name is required")
+							}
+							req, _ := createRequest("POST", "/deployments/"+name+"/rollback")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+
+							if resp.StatusCode != 200 {
+								log.Fatal("Error rolling back a deployment: ", resp.Status)
+							} else {
+								println("Successfully rollbacked a deployment 🔃")
+							}
+							return nil
+						},
+					},
+					{
 						Name:  "logs",
 						Usage: "Get logs for a container",
 						Args:  true,
