@@ -22,12 +22,26 @@ import (
 type Config struct {
 	Endpoint string `json:"endpoint"`
 	Token    string `json:"token"`
+	Servers  ServersConfig
 }
 
-var config = Config{
-	Endpoint: os.Getenv("JIG_ENDPOINT"),
-	Token:    os.Getenv("JIG_TOKEN"),
+func initConfig() (Config, error) {
+
 }
+
+type ServerConfig struct {
+	Endpoint string `json:"endpoint"`
+	Token    string `json:"token"`
+}
+
+type ConfigfileJson struct {
+	Servers        []ServerConfig `json:"servers"`
+	LastUsedServer string
+}
+
+type ServersConfig = ConfigfileJson
+
+var config, _ = initConfig()
 
 func loadFileConfig() error {
 	// Load config from file
