@@ -274,7 +274,7 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 				cli.ContainerStop(context.Background(), rollbackContainer.ID, container.StopOptions{})
 				fmt.Printf("Rollback container %s exists, removing\n", config.Name)
 				cli.ContainerRemove(context.Background(), rollbackContainer.ID, container.RemoveOptions{})
-				return
+
 			}
 
 			currentContainer, err := containerExistsWithName(cli, config.Name)
@@ -288,17 +288,18 @@ func (dr DeploymentsRouter) Router() func(r chi.Router) {
 					w.(http.Flusher).Flush()
 				}
 				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
-				err = cli.ContainerRename(context.Background(), currentContainer.ID, config.Name+"-prev")
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					fmt.Printf("Failed to rename container %s...\n", config.Name)
-					return
-				}
-				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
 				err = cli.ContainerStop(context.Background(), currentContainer.ID, container.StopOptions{})
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
-					fmt.Printf("Failed to stop container %s...\n", config.Name)
+					fmt.Printf("Failed to stop container %s: %s\n", config.Name, err.Error())
+					return
+				}
+
+				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
+				err = cli.ContainerRename(context.Background(), currentContainer.ID, config.Name+"-prev")
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					fmt.Printf("Failed to rename container %s: %s\n", config.Name, err.Error())
 					return
 				}
 			}
@@ -572,7 +573,16 @@ func containerExistsWithName(cli *client.Client, name string) (*types.Container,
 		return nil, err
 	}
 	for _, containerInfo := range containers {
-		if containerInfo.Labels["jig.name"] == name {
+
+		namesInclude := false
+		for _, containerName := range containerInfo.Names {
+			if containerName == "/"+name {
+				namesInclude = true
+				break
+			}
+		}
+
+		if containerInfo.Labels["jig.name"] == name || namesInclude {
 			return &containerInfo, nil
 		}
 	}
