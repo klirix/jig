@@ -2,11 +2,9 @@ package main
 
 import (
 	"archive/tar"
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,11 +12,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"embed"
+
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/urfave/cli/v2"
 )
 
@@ -182,152 +179,8 @@ func loginCommand(c *cli.Context) error {
 
 const DEFAULT_CONFIG = "./jig.json"
 
-func deployComment(c *cli.Context) error {
-	if c.String("token") != "" {
-		config = updateConfigUsingToken(c.String("token"))
-	}
-	configFile := DEFAULT_CONFIG // Default config file
-	if c.String("config") != "" {
-		configFile = c.String("config")
-	}
-	_, err := os.Stat(configFile)
-	if err != nil {
-		log.Fatal("No jig.json file found in the current directory")
-	}
-	configContents, err := os.ReadFile(configFile)
-	if err != nil {
-		log.Fatal("Failed to read jig.json", err)
-	}
-	var deploymentConfig jigtypes.DeploymentConfig
-	err = json.Unmarshal(configContents, &deploymentConfig)
-	if err != nil {
-		log.Fatal("Failed to parse jig.json", err)
-	}
-	if deploymentConfig.Name == "" {
-		log.Fatal("Name is required in jig.json")
-	}
-	cleanedconfig := strings.ReplaceAll(string(configContents), "\n", "")
-
-	println("Deploying container")
-
-	ctx := c.Context
-	// docker.ImageBuild(ctx)
-	verbose := c.Bool("verbose")
-
-	ignorePatterns := loadIgnorePatterns(".jigignore")
-
-	var matches = []string{}
-	err = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
-		if info.IsDir() {
-			return nil
-		}
-		matches = append(matches, path)
-		return nil
-	})
-	if err != nil {
-		log.Fatal("Failed to glob the directory", err.Error())
-	}
-
-	filesToPack := filterFiles(matches, ignorePatterns)
-
-	if verbose {
-		println("Files to pack:")
-		for _, file := range filesToPack {
-			println("-", file)
-		}
-	}
-	fmt.Printf("Packing files, ignoring: %v\n", ignorePatterns)
-
-	reader, writer := io.Pipe()
-
-	go func() {
-		tw := tar.NewWriter(writer)
-
-		for _, filename := range filesToPack {
-			writeFileToTar(filename, tw)
-		}
-		if tw.Close() != nil {
-			log.Fatal(err)
-		}
-		writer.Close()
-	}()
-
-	var uploadStream io.ReadCloser = reader
-
-	localBuild := c.Bool("local")
-
-	if localBuild {
-		docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			log.Fatal("Failed to create docker client", err)
-		}
-		defer docker.Close()
-
-		buildResponse, err := docker.ImageBuild(ctx, reader, types.ImageBuildOptions{
-			Tags:   []string{deploymentConfig.Name + ":latest"},
-			Remove: true,
-		})
-		if err != nil {
-			log.Fatal("Failed to request image build", err.Error())
-		}
-		defer buildResponse.Body.Close()
-
-		buf := bufio.NewScanner(buildResponse.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, false)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
-		}
-
-		newImage, err := docker.ImageSave(ctx, []string{deploymentConfig.Name + ":latest"})
-		if err != nil {
-			log.Fatal("Failed to save image", err.Error())
-		}
-		uploadStream = newImage
-		defer newImage.Close()
-	}
-
-	req, _ := createRequest("POST", "/deployments")
-	req.Header.Add("Content-Type", "application/x-tar")
-
-	req.Header.Add("x-jig-config", string(cleanedconfig))
-	if localBuild {
-		req.Header.Add("x-jig-image", "true")
-	} else {
-		req.Header.Add("x-jig-image", "false")
-	}
-	req.Body = &TrackableReader{ReadCloser: uploadStream}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Fatal("Error making request: ", err)
-	}
-	defer resp.Body.Close()
-
-	if localBuild {
-		if resp.StatusCode != 200 {
-			log.Fatal("Error creating deployment: ", resp.Status)
-		}
-		println("Successfully created a deployment ✨")
-	} else {
-		buf := bufio.NewScanner(resp.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, true)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
-		}
-	}
-
-	return nil
-}
+//go:embed templates/*
+var templates embed.FS
 
 func main() {
 	loadFileConfig()
@@ -347,15 +200,13 @@ func main() {
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
-					err = os.WriteFile("./jig.json", []byte(`{
-  "$schema": "https://deploywithjig.askh.at/jsonschema.json",
-  "name": "`+dirName+`"
-}`), 0644)
+					configTemplate, _ := templates.ReadFile("jig.json")
+					err = os.WriteFile("./jig.json", []byte(strings.Replace(string(configTemplate), "dir-name", dirName, -1)), 0644)
 					if err != nil {
 						log.Fatal("Error writing jig.json: ", err)
 					}
 					os.WriteFile("./.jigignore", []byte(`# This is a list of files to ignore when deploying`), 0644)
-					println("Successfully created a jig.json file ✨")
+					println("Successfully created a jig.jfileson  ✨")
 					return nil
 				},
 			},

@@ -3,6 +3,7 @@ module askh.at/jig/v2
 go 1.22
 
 require github.com/urfave/cli/v2 v2.27.2
+require github.com/go-resty/resty/v2 v2.11.0
 
 require (
 	github.com/Azure/go-ansiterm v0.0.0-20210617225240-d185dfc1b5a1 // indirect
