@@ -20,12 +20,36 @@ import (
 )
 
 type Config struct {
-	Endpoint string `json:"endpoint"`
-	Token    string `json:"token"`
-	Servers  ServersConfig
+	Endpoint       string `json:"endpoint"`
+	Token          string `json:"token"`
+	Servers        map[string]string
+	SelectedServer string
 }
 
 func initConfig() (Config, error) {
+	newConfig := Config{}
+	newConfig.Servers = make(map[string]string)
+	return newConfig, nil
+}
+
+func (c *Config) persist(filename string) error {
+	if c.Servers != nil {
+
+	}
+	configJson, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+	homedir, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	os.Mkdir(homedir+"/.jig", 0755)
+	err = os.WriteFile(homedir+"/.jig/config.json", configJson, 0644)
+	if err != nil {
+		return err
+	}
+	return nil
 
 }
 
@@ -36,18 +60,17 @@ type ServerConfig struct {
 
 type ConfigfileJson struct {
 	Servers        []ServerConfig `json:"servers"`
-	LastUsedServer string
+	LastUsedServer string         `json:"lastUsedServer"`
 }
-
-type ServersConfig = ConfigfileJson
 
 var config, _ = initConfig()
 
 func loadFileConfig() error {
+	Config.initConfig()
 	// Load config from file
 	homedir, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Failed to load user homedir: ", err)
 	}
 	configFile, err := os.ReadFile(homedir + "/.jig/config.json")
 	if err != nil {
