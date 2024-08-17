@@ -21,7 +21,7 @@ import (
 
 func deployComment(c *cli.Context) error {
 	if c.String("token") != "" {
-		config = updateConfigUsingToken(c.String("token"))
+		config.UseTempToken(c.String("token"))
 	}
 	configFilename := DEFAULT_CONFIG // Default config file
 	if c.String("config") != "" {

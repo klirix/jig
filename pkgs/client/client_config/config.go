@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"strings"
 )
 
 type Config struct {
@@ -52,6 +53,21 @@ func (c *Config) ListServers() []string {
 	return servers
 }
 
+var ErrWrongTokenFormat = errors.New("wrong token format")
+
+func (c *Config) UseTempToken(token string) error {
+	if !strings.Contains(token, "+") {
+		return ErrWrongTokenFormat
+	}
+	parts := strings.Split(token, "+")
+	if len(parts) != 2 {
+		return ErrWrongTokenFormat
+	}
+	c.Endpoint = parts[0]
+	c.Token = parts[1]
+	return nil
+}
+
 var ErrServerNotSaved = errors.New("no server selected")
 
 func (c *Config) SelectServer(endpoint string) error {
@@ -66,7 +82,7 @@ func (c *Config) SelectServer(endpoint string) error {
 	return c.Persist()
 }
 
-func (c *Config) ReadFromFile(filename string) error {
+func (c *Config) ReadFromFile() error {
 	homedir, err := os.UserHomeDir()
 	if err != nil {
 		log.Println("Error getting home directory")

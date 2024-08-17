@@ -14,76 +14,13 @@ import (
 
 	"embed"
 
+	"askh.at/jig/v2/pkgs/client/client_config"
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/urfave/cli/v2"
 )
 
-type Config struct {
-	Endpoint       string `json:"endpoint"`
-	Token          string `json:"token"`
-	Servers        map[string]string
-	SelectedServer string
-}
-
-func initConfig() (Config, error) {
-	newConfig := Config{}
-	newConfig.Servers = make(map[string]string)
-	return newConfig, nil
-}
-
-func (c *Config) persist(filename string) error {
-	if c.Servers != nil {
-
-	}
-	configJson, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	homedir, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	os.Mkdir(homedir+"/.jig", 0755)
-	err = os.WriteFile(homedir+"/.jig/config.json", configJson, 0644)
-	if err != nil {
-		return err
-	}
-	return nil
-
-}
-
-type ServerConfig struct {
-	Endpoint string `json:"endpoint"`
-	Token    string `json:"token"`
-}
-
-type ConfigfileJson struct {
-	Servers        []ServerConfig `json:"servers"`
-	LastUsedServer string         `json:"lastUsedServer"`
-}
-
-var config, _ = initConfig()
-
-func loadFileConfig() error {
-	Config.initConfig()
-	// Load config from file
-	homedir, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatal("Failed to load user homedir: ", err)
-	}
-	configFile, err := os.ReadFile(homedir + "/.jig/config.json")
-	if err != nil {
-		if strings.HasSuffix(err.Error(), "no such file or directory") {
-			return nil
-		}
-	}
-	err = json.Unmarshal(configFile, &config)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return nil
-}
+var config, _ = client_config.InitConfig()
 
 var httpClient = &http.Client{}
 
@@ -180,18 +117,12 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func updateConfigUsingToken(token string) Config {
-	strings.Split(token, "+")
-	newConfig := Config{
-		Endpoint: strings.Split(token, "+")[0],
-		Token:    strings.Split(token, "+")[1],
-	}
-	return newConfig
-}
-
 func loginCommand(c *cli.Context) error {
 	token := c.Args().Get(0)
-	config = updateConfigUsingToken(token)
+	if token == "" {
+		config.UseTempToken(token)
+	}
+
 	configJson, err := json.Marshal(config)
 	if err != nil {
 		log.Fatal("Error marshalling new config", err)
@@ -220,7 +151,7 @@ const DEFAULT_CONFIG = "./jig.json"
 var templates embed.FS
 
 func main() {
-	loadFileConfig()
+	config.ReadFromFile()
 	app := &cli.App{
 		Name: "jig",
 		Commands: []*cli.Command{
@@ -339,7 +270,7 @@ func main() {
 						ArgsUsage: " name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -375,7 +306,7 @@ func main() {
 						ArgsUsage: " name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -405,7 +336,7 @@ func main() {
 						ArgsUsage: "deployment name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -438,7 +369,7 @@ func main() {
 						},
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							req, _ := createRequest("GET", "/deployments/stats")
 							resp, err := httpClient.Do(req)
@@ -529,7 +460,7 @@ var (
 
 func listDeployments(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
@@ -560,7 +491,7 @@ func listDeployments(ctx *cli.Context) error {
 
 func ListSecrets(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/secrets")
 	resp, err := httpClient.Do(req)
@@ -595,7 +526,7 @@ func ListSecrets(ctx *cli.Context) error {
 
 func DeleteSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	name := ctx.Args().Get(0)
@@ -624,7 +555,7 @@ func DeleteSecret(ctx *cli.Context) error {
 
 func InspectSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	name := ctx.Args().Get(0)
@@ -659,7 +590,7 @@ func InspectSecret(ctx *cli.Context) error {
 
 func AddSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	bodyToSend := jigtypes.NewSecretBody{
