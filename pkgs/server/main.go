@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -137,6 +141,34 @@ func ensureTraefikRunning(cli *client.Client) error {
 	return nil
 }
 
+const defaultSecretsDbPath = "./secrets.db"
+
+func createOrOpenDb(pathToDb string) (*sql.DB, error) {
+	if _, err := os.Stat(pathToDb); errors.Is(err, os.ErrNotExist) {
+		parts := strings.Split(filepath.ToSlash(pathToDb), "/")
+		dir := strings.Join(parts[:len(parts)-1], "/")
+		// file := parts[len(parts)-1]
+
+		err := os.MkdirAll(dir, os.ModePerm)
+		if err != nil {
+			log.Println("Failed to create db directory", err.Error())
+			return nil, err
+		}
+
+		_, err = os.Create(pathToDb)
+		if err != nil {
+			log.Println("Failed to create db file", err.Error())
+			return nil, err
+		}
+	}
+	newDb, err := sql.Open("sqlite", pathToDb)
+	if err != nil {
+		log.Printf("Failed to open db file: %v", err.Error())
+		return nil, err
+	}
+	return newDb, nil
+}
+
 func main() {
 	app := &cli.App{
 		Name:  "Jig",
@@ -159,7 +191,8 @@ func main() {
 					},
 				},
 				Action: func(ctx *cli.Context) error {
-					ss, err := MakeKey()
+					name := ctx.Args().First()
+					ss, err := MakeKey(name)
 					if err != nil {
 						return err
 					}
@@ -179,7 +212,7 @@ func main() {
 	}
 }
 
-func MakeKey() (string, error) {
+func MakeKey(name string) (string, error) {
 	claims := &jwt.RegisteredClaims{
 		Issuer:  "jig",
 		Subject: "admin",
@@ -215,43 +248,25 @@ func ensureNetworkIsUp(cli *client.Client) error {
 	return nil
 }
 
-func serve() {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		log.Println("Failed to connect to docker daemon")
-		return
-	}
+var tokens *tokenStorage
 
-	if err := ensureNetworkIsUp(cli); err != nil {
-		log.Println("Failed to ensure bridge network is running")
-		panic(err)
-	}
-
-	if err := ensureTraefikRunning(cli); err != nil {
-		log.Println("Failed to ensure traefik is running")
-		panic(err)
-	}
-
-	secretDb, err := InitSecretsWithName("/var/jig/secrets.db")
-	if err != nil {
-		log.Println("Failed to initialize secret_db")
-		panic(err)
-	}
-	defer secretDb.Close()
-
-	log.Println("Listening on 5000")
-	http.ListenAndServe("0.0.0.0:5000", mainRouter(cli, secretDb))
+type AppRouter struct {
+	cli         *client.Client
+	secretStore *Secrets
+	tokenStore  *tokenStorage
 }
 
-func mainRouter(cli *client.Client, secret_db *Secrets) chi.Router {
+func (a *AppRouter) mainRouter() chi.Router {
 	r := chi.NewRouter()
 
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
-	r.With(ensureAuth).Route("/secrets", SecretRouter{secret_db}.Router())
+	r.With(a.ensureAuth).Mount("/secrets", SecretRouter{a.secretStore}.Router())
 
-	r.With(ensureAuth).Route("/deployments", DeploymentsRouter{cli, secret_db}.Router())
+	r.With(a.ensureAuth).Mount("/deployments", DeploymentsRouter{a.cli, a.secretStore}.Router())
+
+	r.With(a.ensureAuth).Mount("/tokens", TokenRouter{a.tokenStore}.Router())
 
 	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("Hewwo!"))
@@ -260,7 +275,18 @@ func mainRouter(cli *client.Client, secret_db *Secrets) chi.Router {
 	return r
 }
 
-func ensureAuth(next http.Handler) http.Handler {
+func respondWithJson(w http.ResponseWriter, statusCode int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	err := json.NewEncoder(w).Encode(data)
+	if err != nil {
+		log.Println("Failed to encode response:", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+func (a *AppRouter) ensureAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(r.Header.Get("Authorization"), " ")
 		if len(parts) != 2 {
@@ -277,25 +303,79 @@ func ensureAuth(next http.Handler) http.Handler {
 
 		tokenString := parts[1]
 
-		claims := &jwt.RegisteredClaims{}
-
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-			return []byte(jwtSecretKey), nil
-		})
-
+		token, err := a.tokenStore.Get(tokenString)
+		if token == nil {
+			log.Println("Token not found")
+			http.Error(w, "Token not found", http.StatusUnauthorized)
+			return
+		}
 		if err != nil {
-			log.Println("Failed to parse token")
-			http.Error(w, "Failed to parse token", http.StatusUnauthorized)
+			log.Println("Failed to fetch token from storage")
+			http.Error(w, "Failed to fetch token from storage", http.StatusInternalServerError)
 			return
 		}
 
-		if !token.Valid {
-			log.Println("Invalid token")
-			http.Error(w, "Invalid token", http.StatusUnauthorized)
-			return
-		}
+		type contextKey string
+
+		const tokenKey contextKey = "token"
+
+		ctx := context.WithValue(r.Context(), tokenKey, token)
+		r = r.WithContext(ctx)
 		next.ServeHTTP(w, r)
 	})
+}
+
+func serve() {
+
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		log.Println("Failed to connect to docker daemon")
+		return
+	}
+	log.Println("Connected to docker daemon")
+
+	if err := ensureNetworkIsUp(cli); err != nil {
+		log.Println("Failed to ensure bridge network is running")
+		panic(err)
+	}
+	log.Println("Bridge network up!")
+
+	if err := ensureTraefikRunning(cli); err != nil {
+		log.Println("Failed to ensure traefik is running")
+		panic(err)
+	}
+	log.Println("Traefik is running!")
+
+	db, err := createOrOpenDb(defaultSecretsDbPath)
+	if err != nil {
+		log.Println("Failed to initialize embeded db")
+		panic(err)
+	}
+
+	secretStore, err := InitSecrets(db)
+	if err != nil {
+		log.Println("Failed to initialize secret storage")
+		panic(err)
+	}
+
+	defer secretStore.Close()
+
+	tokens, err = InitTokenStorage(db)
+	if err != nil {
+		log.Println("Failed to initialize tokens storage")
+		panic(err)
+	}
+
+	app := &AppRouter{
+		cli:         cli,
+		secretStore: secretStore,
+		tokenStore:  tokens,
+	}
+
+	router := app.mainRouter()
+
+	log.Println("Listening on 5000")
+	http.ListenAndServe("0.0.0.0:5000", router)
 }
 
 var jwtSecretKey = os.Getenv("JIG_SECRET")

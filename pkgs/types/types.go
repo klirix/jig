@@ -54,3 +54,11 @@ type Stats struct {
 	MemoryPercentage float64 `json:"memoryPercentage"`
 	MemoryBytes      float64 `json:"memoryBytes"`
 }
+
+type TokenListResponse struct {
+	TokenNames []string `json:"tokens"`
+}
+
+type TokenCreateRequest struct {
+	Name string `json:"name"`
+}

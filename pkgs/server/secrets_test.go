@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,21 +17,49 @@ import (
 
 func TestSecrets(t *testing.T) {
 	// Create a new server
-	db, _ := InitSecretsWithName("./testing.db")
-	defer db.Close()
-	defer os.Remove("./testing.db")
+	db, err := createOrOpenDb("./testing.db")
+	if err != nil {
+		log.Println("Failed to initialize embeded db")
+		panic(err)
+	}
 
+	secretStore, err := InitSecrets(db)
+	if err != nil {
+		log.Println("Failed to initialize secret storage")
+		panic(err)
+	}
+
+	defer secretStore.Close()
+
+	tokens, err = InitTokenStorage(db)
+	if err != nil {
+		log.Println("Failed to initialize tokens storage")
+		panic(err)
+	}
 	cli, _ := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 
-	router := mainRouter(cli, db)
+	app := &AppRouter{
+		cli:         cli,
+		secretStore: secretStore,
+		tokenStore:  tokens,
+	}
+	defer db.Close()
+	defer os.Remove("./testing.db")
+	token, err := tokens.Make("testing")
+	if err != nil {
+		log.Println("Failed to create token")
+		panic(err)
+	}
+
+	router := app.mainRouter()
 	t.Run("inspect endpoint works", func(t *testing.T) {
 
-		db.Insert("test", "testval")
-		defer db.Delete("test")
+		secretStore.Insert("test", "testval")
+		defer secretStore.Delete("test")
 		// Start the server
 		req := httptest.NewRequest(http.MethodGet, "/secrets/test", nil)
-		key, _ := MakeKey()
-		req.Header.Add("Authorization", "Bearer "+key)
+		// key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+token.Token)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -57,8 +86,8 @@ func TestSecrets(t *testing.T) {
 
 		// Start the server
 		req := httptest.NewRequest(http.MethodGet, "/secrets/test", nil)
-		key, _ := MakeKey()
-		req.Header.Add("Authorization", "Bearer "+key)
+		// key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+token.Token)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -75,13 +104,13 @@ func TestSecrets(t *testing.T) {
 
 		testval := uuid.New().String()
 		name := "test-" + uuid.New().String()
-		defer db.Delete(name)
+		defer secretStore.Delete(name)
 
 		// Start the server
 		req := httptest.NewRequest(http.MethodPost, "/secrets", nil)
 		req.Body = io.NopCloser(strings.NewReader(`{"name":"` + name + `", "value":"` + testval + `"}`))
-		key, _ := MakeKey()
-		req.Header.Add("Authorization", "Bearer "+key)
+		// key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+token.Token)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -95,7 +124,7 @@ func TestSecrets(t *testing.T) {
 			t.FailNow()
 		}
 
-		value, err := db.GetValue(name)
+		value, err := secretStore.GetValue(name)
 
 		if err != nil {
 			t.Errorf("Error getting value: %s", err)
@@ -109,12 +138,12 @@ func TestSecrets(t *testing.T) {
 	t.Run("secret deletion endpoint works", func(t *testing.T) {
 
 		name := "test-" + uuid.New().String()
-		db.Insert(name, "testval")
+		secretStore.Insert(name, "testval")
 
 		// Start the server
 		req := httptest.NewRequest(http.MethodDelete, "/secrets/"+name, nil)
-		key, _ := MakeKey()
-		req.Header.Add("Authorization", "Bearer "+key)
+		// key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+token.Token)
 		w := httptest.NewRecorder()
 
 		router.ServeHTTP(w, req)
@@ -125,7 +154,7 @@ func TestSecrets(t *testing.T) {
 			t.FailNow()
 		}
 
-		_, found, _ := db.Get(name)
+		_, found, _ := secretStore.Get(name)
 		if found {
 			t.Errorf("Expected secret to be deleted, but it still exists")
 		}
@@ -134,18 +163,18 @@ func TestSecrets(t *testing.T) {
 	t.Run("list secrets endpoint", func(t *testing.T) {
 
 		// Insert some secrets
-		db.Insert("secret1", "value1")
-		db.Insert("secret2", "value2")
-		db.Insert("secret3", "value3")
+		secretStore.Insert("secret1", "value1")
+		secretStore.Insert("secret2", "value2")
+		secretStore.Insert("secret3", "value3")
 
-		defer db.Delete("secret1")
-		defer db.Delete("secret2")
-		defer db.Delete("secret3")
+		defer secretStore.Delete("secret1")
+		defer secretStore.Delete("secret2")
+		defer secretStore.Delete("secret3")
 
 		// Start the server
 		req := httptest.NewRequest(http.MethodGet, "/secrets", nil)
-		key, _ := MakeKey()
-		req.Header.Add("Authorization", "Bearer "+key)
+		// key, _ := MakeKey()
+		req.Header.Add("Authorization", "Bearer "+token.Token)
 		w := httptest.NewRecorder()
 		// Code to measure
 		router.ServeHTTP(w, req)
