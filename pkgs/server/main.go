@@ -21,8 +21,6 @@ import (
 	"github.com/docker/go-connections/nat"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/urfave/cli/v2"
 	_ "modernc.org/sqlite"
@@ -177,34 +175,7 @@ func main() {
 			serve()
 			return nil
 		},
-		Commands: []*cli.Command{
-			{
-				Name:  "makeKey",
-				Usage: "Generate a new JWT secret key",
-				Args:  true,
-				Flags: []cli.Flag{
-					&cli.BoolFlag{
-						Name:    "short",
-						Aliases: []string{"s"},
-						Value:   false,
-						Usage:   "Short output",
-					},
-				},
-				Action: func(ctx *cli.Context) error {
-					name := ctx.Args().First()
-					ss, err := MakeKey(name)
-					if err != nil {
-						return err
-					}
-					if !ctx.Bool("short") {
-						print("Your new jwt secret key ✨🔑:\njig login ")
-					}
-
-					fmt.Printf("https://%s+%s\n", os.Getenv("JIG_DOMAIN"), ss)
-					return nil
-				},
-			},
-		},
+		Commands: []*cli.Command{},
 	}
 
 	if err := app.Run(os.Args); err != nil {
@@ -212,21 +183,14 @@ func main() {
 	}
 }
 
-func MakeKey(name string) (string, error) {
-	claims := &jwt.RegisteredClaims{
-		Issuer:  "jig",
-		Subject: "admin",
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	token.Header["alg"] = "HS256"
-	token.Header["kid"] = uuid.New().String()
-	ss, err := token.SignedString([]byte(jwtSecretKey))
-	if err != nil {
-		return "", err
-	}
-	return ss, nil
-}
+// func (app *AppRouter) makeKey(name string) (string, error) {
+// 	record, err := app.tokenStore.Make(name)
+// 	if err != nil {
+// 		log.Println("Failed to create token, with name", name, ":", err)
+// 		return "", err
+// 	}
+// 	return record.Token, nil
+// }
 
 func ensureNetworkIsUp(cli *client.Client) error {
 	networks, err := cli.NetworkList(context.Background(), types.NetworkListOptions{
@@ -374,8 +338,27 @@ func serve() {
 
 	router := app.mainRouter()
 
+	go func() {
+		tokens, err := app.tokenStore.List()
+		if err != nil {
+			log.Println("Failed to list tokens", err)
+			return
+		}
+		if len(tokens) == 0 {
+			log.Println("No tokens found, creating default token")
+			defaultToken, err := app.tokenStore.Make("default")
+			if err != nil {
+				log.Println("Failed to create default token", err)
+				return
+			}
+			log.Println("Created default token:", defaultToken.Name)
+			fmt.Print("Your new jwt secret key ✨🔑:\njig login ")
+
+			fmt.Printf("https://%s+%s\n", os.Getenv("JIG_DOMAIN"), defaultToken.Token)
+
+		}
+	}()
 	log.Println("Listening on 5000")
 	http.ListenAndServe("0.0.0.0:5000", router)
-}
 
-var jwtSecretKey = os.Getenv("JIG_SECRET")
+}
