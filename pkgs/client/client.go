@@ -120,15 +120,12 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 
 func loginCommand(c *cli.Context) error {
 	token := c.Args().Get(0)
-	log.Print(token)
 	if token != "" {
 		err := config.UseTempToken(token)
 		if err != nil {
 			log.Fatal("Error using token: ", err)
 		}
-
 	}
-	log.Printf("%+v/n", config)
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
 	if err != nil {
