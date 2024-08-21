@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -119,14 +120,15 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 
 func loginCommand(c *cli.Context) error {
 	token := c.Args().Get(0)
-	if token == "" {
-		config.UseTempToken(token)
-	}
+	log.Print(token)
+	if token != "" {
+		err := config.UseTempToken(token)
+		if err != nil {
+			log.Fatal("Error using token: ", err)
+		}
 
-	configJson, err := json.Marshal(config)
-	if err != nil {
-		log.Fatal("Error marshalling new config", err)
 	}
+	log.Printf("%+v/n", config)
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -135,12 +137,8 @@ func loginCommand(c *cli.Context) error {
 	if resp.StatusCode != 200 {
 		log.Fatal("Error connecting to jig ", resp.Status)
 	}
-	homedir, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatal("Failed to get home dir", err)
-	}
-	os.Mkdir(homedir+"/.jig", 0755)
-	os.WriteFile(homedir+"/.jig/config.json", configJson, 0644)
+	config.AddServer(config.Endpoint, config.Token)
+	config.Persist()
 	println("Successfully logged in ✨")
 	return nil
 }
@@ -160,6 +158,7 @@ func main() {
 				Usage: "Initiate jig in the directory",
 				Args:  false,
 				Action: func(ctx *cli.Context) error {
+
 					if _, err := os.Stat("./jig.json"); err == nil {
 						log.Fatal("jig.json already exists")
 					}
@@ -402,23 +401,179 @@ func main() {
 				},
 			},
 			{
+				Name: "tokens",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "ls",
+						Usage: "List tokens",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+
+							req, _ := createRequest("GET", "/tokens")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							body, err := io.ReadAll(resp.Body)
+							if err != nil {
+								log.Fatal("Error reading request: ", err)
+							}
+							var tokens jigtypes.TokenListResponse
+							err = json.Unmarshal(body, &tokens)
+
+							if err != nil {
+								println("Error unmarshalling response: ", string(body))
+								log.Fatal("Error unmarshalling response: ", err)
+							}
+
+							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
+							fmt.Fprintln(os.Stdout, []any{"> Tokens:\n"}...)
+							if len(tokens.TokenNames) > 0 {
+								fmt.Fprintln(writer, "  name")
+							} else {
+								fmt.Fprintln(writer, "  No tokens set yet 🤫")
+							}
+							for _, token := range tokens.TokenNames {
+								fmt.Fprintf(writer, "  %s\n", token)
+							}
+							writer.Flush()
+							return nil
+						},
+					},
+					{
+						Name:  "create",
+						Usage: "Create a token",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args: true,
+						Action: func(ctx *cli.Context) error {
+							name := ctx.Args().First()
+							req, _ := createRequest("POST", "/tokens")
+							bodyToSend := jigtypes.TokenCreateRequest{
+								Name: name,
+							}
+							bodyBytes, _ := json.Marshal(bodyToSend)
+
+							req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							if resp.StatusCode != 201 {
+								log.Fatal("Error creating token: ", resp.Status)
+							}
+							var tokenCreateResponse jigtypes.TokenCreateResponse
+							err = json.NewDecoder(resp.Body).Decode(&tokenCreateResponse)
+							if err != nil {
+								log.Fatal("Error reading response: ", err)
+							}
+
+							println("Successfully created a token, keep it safe: ✨")
+							println("Name:", tokenCreateResponse.Name)
+							println("Token:", config.SelectedServer+"+"+tokenCreateResponse.Token)
+							return nil
+						},
+					},
+					{
+						Name:  "delete",
+						Usage: "Delete a token",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args: true,
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							name := ctx.Args().First()
+							if name == "" {
+								log.Fatal("Name is required")
+							}
+							req, _ := createRequest("DELETE", "/tokens/"+name)
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+
+							if resp.StatusCode != 204 {
+								log.Fatal("Error deleting token: ", resp.Status)
+							} else {
+								println("Successfully removed a token ❌")
+							}
+							return nil
+						},
+					},
+				},
+			},
+			{
+				Name: "servers",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "ls",
+						Usage: "List servers",
+						Action: func(ctx *cli.Context) error {
+							println("Available servers:")
+							for server := range config.Servers {
+								println(server)
+							}
+							return nil
+						},
+					},
+					{
+						Name:  "select",
+						Usage: "Select a server",
+						Args:  true,
+						Action: func(ctx *cli.Context) error {
+							server := ctx.Args().First()
+							err := config.SelectServer(server)
+							if err != nil {
+								log.Fatal("Error selecting server: ", err)
+							}
+							println("Successfully selected server: ", server)
+							return nil
+						},
+					},
+					{
+						Name:  "rm",
+						Usage: "Remove a server",
+						Args:  true,
+						Action: func(ctx *cli.Context) error {
+							server := ctx.Args().First()
+							if server == "" {
+								log.Fatal("Server name is required")
+							}
+							delete(config.Servers, server)
+							if config.SelectedServer == server {
+								config.SelectedServer = ""
+								config.Token = ""
+							}
+							config.Persist()
+							println("Successfully removed server: ", server)
+							return nil
+						},
+					},
+				},
+			},
+			{
 				Name: "secrets",
 				Subcommands: []*cli.Command{
 					{
 						Name:    "ls",
 						Aliases: []string{"list"},
 						Usage:   "List secrets",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
-						Action: ListSecrets,
+						Flags:   []cli.Flag{tokenFlag},
+						Action:  ListSecrets,
 					},
 					{
-						Name:  "inspect",
-						Usage: "Inspect a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
+						Name:   "inspect",
+						Usage:  "Inspect a secret",
+						Flags:  []cli.Flag{tokenFlag},
 						Action: InspectSecret,
 					},
 
@@ -427,17 +582,13 @@ func main() {
 						Args:      true,
 						ArgsUsage: "name value",
 						Usage:     "add a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
-						Action: AddSecret,
+						Flags:     []cli.Flag{tokenFlag},
+						Action:    AddSecret,
 					},
 					{
-						Name:  "rm",
-						Usage: "delete a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
+						Name:   "rm",
+						Usage:  "delete a secret",
+						Flags:  []cli.Flag{tokenFlag},
 						Action: DeleteSecret,
 					},
 				},

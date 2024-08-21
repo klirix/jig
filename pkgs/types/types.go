@@ -62,3 +62,7 @@ type TokenListResponse struct {
 type TokenCreateRequest struct {
 	Name string `json:"name"`
 }
+type TokenCreateResponse struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
+}

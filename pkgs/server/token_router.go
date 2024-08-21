@@ -32,13 +32,13 @@ func (t *TokenRouter) createToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, err = t.storage.Make(body.Name)
+	newToken, err := t.storage.Make(body.Name)
 	if err != nil {
 		log.Println("Failed to create token:", err)
 		http.Error(w, "Failed to create token", http.StatusInternalServerError)
 		return
 	}
-	respondWithJson(w, http.StatusCreated, "")
+	respondWithJson(w, http.StatusCreated, jigtypes.TokenCreateResponse{Name: body.Name, Token: newToken.Token})
 }
 
 func (t *TokenRouter) listTokens(w http.ResponseWriter, r *http.Request) {
@@ -69,5 +69,5 @@ func (t *TokenRouter) deleteToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respondWithJson(w, http.StatusOK, "")
+	respondWithJson(w, http.StatusNoContent, "")
 }

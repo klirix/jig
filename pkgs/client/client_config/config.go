@@ -37,7 +37,7 @@ func InitConfig() (Config, error) {
 }
 
 func (c *Config) AddServer(endpoint string, token string) {
-	c.Servers[endpoint] = endpoint
+	c.Servers[endpoint] = token
 	c.SelectedServer = endpoint
 	c.Endpoint = endpoint
 	c.Token = token
@@ -106,6 +106,16 @@ func (c *Config) ReadFromFile() error {
 
 	for _, server := range config.Servers {
 		c.Servers[server.Endpoint] = server.Token
+	}
+
+	token, ok := c.Servers[c.SelectedServer]
+	if ok {
+		c.Token = token
+		c.Endpoint = c.SelectedServer
+	} else {
+		c.Token = ""
+		c.Endpoint = ""
+		log.Print("Selected server not found in config")
 	}
 
 	return nil
