@@ -18,10 +18,10 @@ jobs:
 
       # You can test your matrix by printing the current Go version
       - name: Build for darwin
-        run: GOOS=darwin GOARCH=arm64 go build -o jig-darwin pkgs/client/client.go
+        run: GOOS=darwin GOARCH=arm64 go build -o jig-darwin pkgs/client/*
 
       - name: Build for linux
-        run: GOOS=linux GOARCH=amd64 go build -o jig-linux pkgs/client/client.go
+        run: GOOS=linux GOARCH=amd64 go build -o jig-linux pkgs/client/*
 
       - name: Set outputs
         id: vars

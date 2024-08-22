@@ -161,6 +161,7 @@ func main() {
 					}
 					currentDir, err := os.Getwd()
 					dirName := filepath.Base(currentDir)
+
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
