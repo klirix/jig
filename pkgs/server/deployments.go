@@ -149,17 +149,30 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 	}
 
 	var deployments []jigtypes.Deployment = []jigtypes.Deployment{}
+	deploymentHasRollback := make(map[string]bool)
 	for _, container := range containers {
 		name, isJigDeployment := container.Labels["jig.name"]
 		if !isJigDeployment {
 			continue
 		}
+		if (container.Labels["jig.name"] + "-prev") == container.Names[0] {
+			deploymentHasRollback[name] = true
+		}
+	}
+
+	for _, container := range containers {
+		name, isJigDeployment := container.Labels["jig.name"]
+		if !isJigDeployment || (container.Labels["jig.name"]+"-prev") == container.Names[0] {
+			continue
+		}
+
 		deployments = append(deployments, jigtypes.Deployment{
-			ID:       container.ID,
-			Name:     container.Labels["jig.name"],
-			Rule:     container.Labels["traefik.http.routers."+name+`-secure.rule`],
-			Status:   container.State,
-			Lifetime: container.Status,
+			ID:          container.ID,
+			Name:        container.Labels["jig.name"],
+			Rule:        container.Labels["traefik.http.routers."+name+`-secure.rule`],
+			Status:      container.State,
+			Lifetime:    container.Status,
+			HasRollback: deploymentHasRollback[name],
 		})
 	}
 

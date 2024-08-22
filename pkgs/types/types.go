@@ -28,11 +28,12 @@ type RateLimitMiddleware struct {
 }
 
 type Deployment struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Rule     string `json:"rule"`
-	Status   string `json:"status"`
-	Lifetime string `json:"lifetime"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Rule        string `json:"rule"`
+	Status      string `json:"status"`
+	Lifetime    string `json:"lifetime"`
+	HasRollback bool   `json:"hasRollback"`
 }
 
 type NewSecretBody struct {

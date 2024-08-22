@@ -629,9 +629,9 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\trule\tstate\tstatus")
+	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\tlifetime\thas rollback")
 	for _, deployment := range deployments {
-		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime)
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%v\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime, deployment.HasRollback)
 	}
 	writer.Flush()
 	return nil
