@@ -148,7 +148,7 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var deployments []jigtypes.Deployment = []jigtypes.Deployment{}
+	deployments := []jigtypes.Deployment{}
 	deploymentHasRollback := make(map[string]bool)
 	for _, container := range containers {
 		name, isJigDeployment := container.Labels["jig.name"]
