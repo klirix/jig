@@ -155,14 +155,14 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 		if !isJigDeployment {
 			continue
 		}
-		if (container.Labels["jig.name"] + "-prev") == container.Names[0] {
+		if (container.Labels["jig.name"] + "-prev") == "/"+container.Names[0] {
 			deploymentHasRollback[name] = true
 		}
 	}
 
 	for _, container := range containers {
 		name, isJigDeployment := container.Labels["jig.name"]
-		if !isJigDeployment || (container.Labels["jig.name"]+"-prev") == container.Names[0] {
+		if !isJigDeployment || (name+"-prev") == "/"+container.Names[0] {
 			continue
 		}
 
