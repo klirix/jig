@@ -631,10 +631,17 @@ func listDeployments(ctx *cli.Context) error {
 	println("> Current deployments:\n")
 	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\tlifetime\thas rollback")
 	for _, deployment := range deployments {
-		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%v\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime, deployment.HasRollback)
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime, yesOrNo(deployment.HasRollback))
 	}
 	writer.Flush()
 	return nil
+}
+
+func yesOrNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return ""
 }
 
 func ListSecrets(ctx *cli.Context) error {
