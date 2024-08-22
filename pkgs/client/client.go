@@ -155,13 +155,11 @@ func main() {
 				Usage: "Initiate jig in the directory",
 				Args:  false,
 				Action: func(ctx *cli.Context) error {
-
 					if _, err := os.Stat("./jig.json"); err == nil {
 						log.Fatal("jig.json already exists")
 					}
 					currentDir, err := os.Getwd()
 					dirName := filepath.Base(currentDir)
-
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
