@@ -138,430 +138,454 @@ type DeploymentsRouter struct {
 	secret_db *Secrets
 }
 
-func (dr DeploymentsRouter) Router() func(r chi.Router) {
-	cli := dr.cli
-	secretDb := dr.secret_db
-	return func(r chi.Router) {
-		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Request) {
 
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				All: true,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+	containers, err := d.cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 
-			var deployments []jigtypes.Deployment = []jigtypes.Deployment{}
-			for _, container := range containers {
-				name, isJigDeployment := container.Labels["jig.name"]
-				if !isJigDeployment {
-					continue
-				}
-				deployments = append(deployments, jigtypes.Deployment{
-					ID:       container.ID,
-					Name:     container.Labels["jig.name"],
-					Rule:     container.Labels["traefik.http.routers."+name+`-secure.rule`],
-					Status:   container.State,
-					Lifetime: container.Status,
-				})
-			}
+	deployments := []jigtypes.Deployment{}
+	deploymentHasRollback := make(map[string]bool)
+	for _, container := range containers {
+		name, isJigDeployment := container.Labels["jig.name"]
+		if !isJigDeployment {
+			continue
+		}
+		if (container.Labels["jig.name"] + "-prev") == container.Names[0] {
+			deploymentHasRollback[name] = true
+		}
+	}
 
-			deploymentsJson, err := json.Marshal(deployments)
-			if err != nil {
-				println("Failed to marshal deployments", deploymentsJson, err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
+	for _, container := range containers {
+		name, isJigDeployment := container.Labels["jig.name"]
+		if !isJigDeployment || (container.Labels["jig.name"]+"-prev") == container.Names[0] {
+			continue
+		}
 
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(deploymentsJson)
-		})
-
-		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
-
-			// Get config from header
-			configString := r.Header.Get("x-jig-config")
-			jigImageHeader := r.Header.Get("x-jig-image")
-			isJigImage := jigImageHeader == "true"
-			if configString == "" {
-				http.Error(w, "Config not found", http.StatusBadRequest)
-				return
-			}
-			var config jigtypes.DeploymentConfig
-			if err := json.Unmarshal([]byte(configString), &config); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if config.Name == "" {
-				http.Error(w, "Name is required", http.StatusBadRequest)
-				return
-			}
-
-			// Check if image already exists
-			images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
-			if err != nil {
-				log.Println("Failed to list images", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			for _, image := range images {
-				for _, tag := range image.RepoTags {
-					if tag == config.Name+":latest" {
-						cli.ImageTag(context.Background(), tag, config.Name+":prev")
-						w.Write([]byte("Image exists, tagging as prev for rollback\n"))
-					}
-				}
-			}
-
-			// Load image from body
-			if isJigImage {
-				res, err := cli.ImageLoad(context.Background(), r.Body, true)
-				if err != nil {
-					fmt.Println("Failed to load image for deployment", config)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				defer res.Body.Close()
-				data, err := io.ReadAll(res.Body)
-				if !strings.Contains(string(data), "Loaded image") || err != nil {
-					fmt.Println("Failed to load image for deployment", config)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-			} else {
-				// build image from buildcontext over the request body
-				buildResponse, err := cli.ImageBuild(context.Background(), r.Body, types.ImageBuildOptions{
-					Tags:        []string{config.Name + ":latest"},
-					Remove:      true,
-					ForceRemove: true,
-				})
-				if err != nil {
-					fmt.Println("Failed to load image for deployment", config)
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				defer buildResponse.Body.Close()
-
-				buf := bufio.NewScanner(buildResponse.Body)
-				for buf.Scan() {
-					jsonMessage := jsonmessage.JSONMessage{}
-					json.Unmarshal(buf.Bytes(), &jsonMessage)
-					jsonMessage.Display(os.Stdout, true)
-					w.Write(buf.Bytes())
-					w.Write([]byte{'\n'})
-					w.(http.Flusher).Flush()
-					if jsonMessage.Error != nil {
-						buildResponse.Body.Close()
-						return
-					}
-				}
-			}
-
-			// Check if rollback container already exists
-			rollbackContainer, err := containerExistsWithName(cli, config.Name+"-prev")
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if rollbackContainer != nil {
-				if !isJigImage {
-					w.Write([]byte("\n{\"stream\": \"Rollback container exists, removing...\"}\n"))
-					w.(http.Flusher).Flush()
-				}
-				fmt.Printf("Rollback container %s exists, stopping...\n", config.Name)
-				cli.ContainerStop(context.Background(), rollbackContainer.ID, container.StopOptions{})
-				fmt.Printf("Rollback container %s exists, removing\n", config.Name)
-				cli.ContainerRemove(context.Background(), rollbackContainer.ID, container.RemoveOptions{})
-				return
-			}
-
-			currentContainer, err := containerExistsWithName(cli, config.Name)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			if currentContainer != nil {
-				if !isJigImage {
-					w.Write([]byte("\n{\"stream\": \"Current container exists, renaming...\"}\n"))
-					w.(http.Flusher).Flush()
-				}
-				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
-				err = cli.ContainerRename(context.Background(), currentContainer.ID, config.Name+"-prev")
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					fmt.Printf("Failed to rename container %s...\n", config.Name)
-					return
-				}
-				fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
-				err = cli.ContainerStop(context.Background(), currentContainer.ID, container.StopOptions{})
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					fmt.Printf("Failed to stop container %s...\n", config.Name)
-					return
-				}
-			}
-
-			exposedPorts := map[nat.Port]struct{}{}
-			if config.Port != 0 {
-				exposedPorts[nat.Port(fmt.Sprint(config.Port)+"/tcp")] = struct{}{}
-			}
-
-			envs, err := makeEnvs(config.Envs, secretDb)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-
-			var restartPolicy container.RestartPolicy
-			if strings.Contains(config.RestartPolicy, ":") {
-				parts := strings.Split(config.RestartPolicy, ":")
-				retryCount, err := strconv.Atoi(parts[1])
-				if err != nil {
-					println("Failed to parse retry count", err.Error())
-					http.Error(w, "Failed to parse retry count", http.StatusInternalServerError)
-					return
-				}
-				restartPolicy = container.RestartPolicy{
-					Name:              container.RestartPolicyMode(parts[0]),
-					MaximumRetryCount: retryCount,
-				}
-			} else {
-				restartPolicy = container.RestartPolicy{
-					Name: container.RestartPolicyMode(config.RestartPolicy),
-				}
-			}
-
-			internalHostname := config.Name
-			if config.Hostname != "" {
-				internalHostname = config.Hostname
-			}
-
-			mounts := []mount.Mount{}
-
-			if config.Volumes != nil {
-				for _, volume := range config.Volumes {
-					parts := strings.Split(volume, ":")
-					if parts[0] == "" || parts[1] == "" {
-						http.Error(w, "Invalid volume", http.StatusBadRequest)
-						return
-					}
-					mounts = append(mounts, mount.Mount{
-						Type:   mount.TypeBind,
-						Source: parts[0],
-						Target: parts[1],
-					})
-				}
-			}
-
-			_, err = cli.ContainerCreate(context.Background(), &container.Config{
-				ExposedPorts: exposedPorts,
-				Env:          envs,
-				Image:        config.Name + ":latest",
-				Labels:       makeLabels(config),
-			}, &container.HostConfig{
-				RestartPolicy: restartPolicy,
-				Mounts:        mounts,
-			}, &network.NetworkingConfig{
-				EndpointsConfig: map[string]*network.EndpointSettings{
-					"jig": {
-						Aliases: []string{internalHostname},
-					},
-				},
-			}, &v1.Platform{}, config.Name)
-			if err != nil {
-				println("Failed to create container", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			fmt.Printf("Container %s created\n", config.Name)
-
-			err = cli.ContainerStart(context.Background(), config.Name, container.StartOptions{})
-			if err != nil {
-				println("Failed to start container", err.Error())
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			fmt.Printf("Container %s started\n", config.Name)
-			if !isJigImage {
-				w.Write([]byte("{\"stream\": \"\\nImage built and container started\"}\n"))
-				w.(http.Flusher).Flush()
-			}
-		})
-
-		r.Delete("/{name}", func(w http.ResponseWriter, r *http.Request) {
-
-			name := r.PathValue("name")
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				All: true,
-			})
-
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			for _, containerInfo := range containers {
-				if containerInfo.Labels["jig.name"] == name {
-					cli.ContainerStop(context.Background(), containerInfo.ID, container.StopOptions{})
-					cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{})
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-			}
-
-			http.Error(w, "Container not found", http.StatusNotFound)
-		})
-
-		r.Post("/{name}/rollback", func(w http.ResponseWriter, r *http.Request) {
-
-			name := r.PathValue("name")
-
-			currentDeployment, err := containerExistsWithName(cli, name)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			if currentDeployment == nil {
-				log.Printf("Original deployment not found: %s", name)
-				http.Error(w, "Deployment not found", http.StatusNotFound)
-				return
-			}
-			rollbackTarget, err := containerExistsWithName(cli, name+"-prev")
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			if rollbackTarget == nil {
-				log.Printf("Container not found for rollback: %s", name)
-				http.Error(w, "Rollback targer doesn't exist", http.StatusNotFound)
-				return
-			}
-
-			err = cli.ContainerStop(context.Background(), currentDeployment.ID, container.StopOptions{})
-			if err != nil {
-				http.Error(w, "Failed to stop container", http.StatusInternalServerError)
-				return
-			}
-			err = cli.ContainerRename(context.Background(), currentDeployment.ID, name+"-old")
-			if err != nil {
-				http.Error(w, "Failed to rename current container", http.StatusInternalServerError)
-				return
-			}
-
-			err = cli.ContainerRename(context.Background(), rollbackTarget.ID, name)
-			if err != nil {
-				http.Error(w, "Failed to rename rollback container", http.StatusInternalServerError)
-				return
-			}
-			err = cli.ContainerStart(context.Background(), name, container.StartOptions{})
-			if err != nil {
-				http.Error(w, "Failed to start rollback container, trying to restart current deployment", http.StatusInternalServerError)
-				cli.ContainerRename(context.Background(), currentDeployment.ID, name)
-				cli.ContainerStart(context.Background(), name, container.StartOptions{})
-				return
-			}
-
-			err = cli.ContainerRemove(context.Background(), currentDeployment.ID, container.RemoveOptions{})
-			if err != nil {
-				http.Error(w, "Failed to remove old container", http.StatusInternalServerError)
-				return
-			}
-
-		})
-
-		r.Get("/{name}/logs", func(w http.ResponseWriter, r *http.Request) {
-
-			name := r.PathValue("name")
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				All: true,
-			})
-
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-
-			for _, containerInfo := range containers {
-				if containerInfo.Labels["jig.name"] == name {
-					logs, err := cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
-						ShowStdout: true,
-						ShowStderr: true,
-					})
-					if err != nil {
-						http.Error(w, err.Error(), http.StatusInternalServerError)
-						return
-					}
-					w.WriteHeader(http.StatusOK)
-					w.Header().Set("Content-Type", "text/plain")
-					io.Copy(w, logs)
-					return
-				}
-			}
-
-			http.Error(w, "Container not found", http.StatusNotFound)
-		})
-
-		r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-			containers, err := cli.ContainerList(context.Background(), container.ListOptions{
-				Filters: filters.NewArgs(filters.KeyValuePair{Key: "label", Value: "jig.name"}),
-			})
-			if err != nil {
-				log.Print("Failed to list the containers")
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-			var allStats []jigtypes.Stats = make([]jigtypes.Stats, 0, len(containers))
-			for _, container := range containers {
-				stats, err := cli.ContainerStatsOneShot(context.Background(), container.ID)
-
-				if err != nil {
-					log.Print("Failed to get container stats info")
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-				body, err := io.ReadAll(stats.Body)
-				if err != nil {
-					log.Println("Somehow failed to read the body", err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-				defer stats.Body.Close()
-				var containerStats types.StatsJSON
-				if err := json.Unmarshal(body, &containerStats); err != nil {
-					log.Println("Failed to unmarshal stats", err.Error())
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-				}
-
-				usedMemory :=
-					containerStats.MemoryStats.Usage -
-						containerStats.MemoryStats.Stats["cache"]
-
-				cpuD :=
-					containerStats.CPUStats.CPUUsage.TotalUsage -
-						containerStats.PreCPUStats.CPUUsage.TotalUsage
-
-				sysCpuD :=
-					containerStats.CPUStats.SystemUsage -
-						containerStats.PreCPUStats.CPUUsage.TotalUsage
-
-				cpuNum := containerStats.CPUStats.OnlineCPUs
-
-				allStats = append(allStats, jigtypes.Stats{
-					Name:             container.Names[0],
-					MemoryBytes:      math.Round((float64(usedMemory)/(1024*1024))*100) / 100,
-					MemoryPercentage: math.Round((float64(usedMemory)/float64(containerStats.MemoryStats.Limit))*10000) / 100,
-					CpuPercentage:    math.Round((float64(cpuD)/float64(sysCpuD))*float64(cpuNum)*10000) / 100,
-				})
-			}
-
-			statsJson, err := json.Marshal(allStats)
-			if err != nil {
-				log.Print("Failed to marshal stats")
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-			}
-
-			w.Header().Set("Content-Type", "application/json")
-			w.Write(statsJson)
-
+		deployments = append(deployments, jigtypes.Deployment{
+			ID:          container.ID,
+			Name:        container.Labels["jig.name"],
+			Rule:        container.Labels["traefik.http.routers."+name+`-secure.rule`],
+			Status:      container.State,
+			Lifetime:    container.Status,
+			HasRollback: deploymentHasRollback[name],
 		})
 	}
+
+	deploymentsJson, err := json.Marshal(deployments)
+	if err != nil {
+		println("Failed to marshal deployments", deploymentsJson, err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(deploymentsJson)
+}
+
+func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
+	cli := d.cli
+	// Get config from header
+	configString := r.Header.Get("x-jig-config")
+	jigImageHeader := r.Header.Get("x-jig-image")
+	isJigImage := jigImageHeader == "true"
+	if configString == "" {
+		http.Error(w, "Config not found", http.StatusBadRequest)
+		return
+	}
+	var config jigtypes.DeploymentConfig
+	if err := json.Unmarshal([]byte(configString), &config); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if config.Name == "" {
+		http.Error(w, "Name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if image already exists
+	images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
+	if err != nil {
+		log.Println("Failed to list images", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, image := range images {
+		for _, tag := range image.RepoTags {
+			if tag == config.Name+":latest" {
+				cli.ImageTag(context.Background(), tag, config.Name+":prev")
+				w.Write([]byte("Image exists, tagging as prev for rollback\n"))
+			}
+		}
+	}
+
+	// Load image from body
+	if isJigImage {
+		res, err := cli.ImageLoad(context.Background(), r.Body, true)
+		if err != nil {
+			fmt.Println("Failed to load image for deployment", config)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer res.Body.Close()
+		data, err := io.ReadAll(res.Body)
+		if !strings.Contains(string(data), "Loaded image") || err != nil {
+			fmt.Println("Failed to load image for deployment", config)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		// build image from buildcontext over the request body
+		buildResponse, err := cli.ImageBuild(context.Background(), r.Body, types.ImageBuildOptions{
+			Tags:        []string{config.Name + ":latest"},
+			Remove:      true,
+			ForceRemove: true,
+		})
+		if err != nil {
+			fmt.Println("Failed to load image for deployment", config)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		defer buildResponse.Body.Close()
+
+		buf := bufio.NewScanner(buildResponse.Body)
+		for buf.Scan() {
+			jsonMessage := jsonmessage.JSONMessage{}
+			json.Unmarshal(buf.Bytes(), &jsonMessage)
+			jsonMessage.Display(os.Stdout, true)
+			w.Write(buf.Bytes())
+			w.Write([]byte{'\n'})
+			w.(http.Flusher).Flush()
+			if jsonMessage.Error != nil {
+				buildResponse.Body.Close()
+				return
+			}
+		}
+	}
+
+	// Check if rollback container already exists
+	rollbackContainer, err := containerExistsWithName(cli, config.Name+"-prev")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if rollbackContainer != nil {
+		if !isJigImage {
+			w.Write([]byte("\n{\"stream\": \"Rollback container exists, removing...\"}\n"))
+			w.(http.Flusher).Flush()
+		}
+		fmt.Printf("Rollback container %s exists, stopping...\n", config.Name)
+		cli.ContainerStop(context.Background(), rollbackContainer.ID, container.StopOptions{})
+		fmt.Printf("Rollback container %s exists, removing\n", config.Name)
+		cli.ContainerRemove(context.Background(), rollbackContainer.ID, container.RemoveOptions{})
+
+	}
+
+	currentContainer, err := containerExistsWithName(cli, config.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if currentContainer != nil {
+		if !isJigImage {
+			w.Write([]byte("\n{\"stream\": \"Current container exists, renaming...\"}\n"))
+			w.(http.Flusher).Flush()
+		}
+		fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
+		err = cli.ContainerStop(context.Background(), currentContainer.ID, container.StopOptions{})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			fmt.Printf("Failed to stop container %s: %s\n", config.Name, err.Error())
+			return
+		}
+
+		fmt.Printf("Container %s exists, using it as a rollback...\n", config.Name)
+		err = cli.ContainerRename(context.Background(), currentContainer.ID, config.Name+"-prev")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			fmt.Printf("Failed to rename container %s: %s\n", config.Name, err.Error())
+			return
+		}
+	}
+
+	exposedPorts := map[nat.Port]struct{}{}
+	if config.Port != 0 {
+		exposedPorts[nat.Port(fmt.Sprint(config.Port)+"/tcp")] = struct{}{}
+	}
+
+	envs, err := makeEnvs(config.Envs, d.secret_db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var restartPolicy container.RestartPolicy
+	if strings.Contains(config.RestartPolicy, ":") {
+		parts := strings.Split(config.RestartPolicy, ":")
+		retryCount, err := strconv.Atoi(parts[1])
+		if err != nil {
+			println("Failed to parse retry count", err.Error())
+			http.Error(w, "Failed to parse retry count", http.StatusInternalServerError)
+			return
+		}
+		restartPolicy = container.RestartPolicy{
+			Name:              container.RestartPolicyMode(parts[0]),
+			MaximumRetryCount: retryCount,
+		}
+	} else {
+		restartPolicy = container.RestartPolicy{
+			Name: container.RestartPolicyMode(config.RestartPolicy),
+		}
+	}
+
+	internalHostname := config.Name
+	if config.Hostname != "" {
+		internalHostname = config.Hostname
+	}
+
+	mounts := []mount.Mount{}
+
+	if config.Volumes != nil {
+		for _, volume := range config.Volumes {
+			parts := strings.Split(volume, ":")
+			if parts[0] == "" || parts[1] == "" {
+				http.Error(w, "Invalid volume", http.StatusBadRequest)
+				return
+			}
+			mounts = append(mounts, mount.Mount{
+				Type:   mount.TypeBind,
+				Source: parts[0],
+				Target: parts[1],
+			})
+		}
+	}
+
+	_, err = cli.ContainerCreate(context.Background(), &container.Config{
+		ExposedPorts: exposedPorts,
+		Env:          envs,
+		Image:        config.Name + ":latest",
+		Labels:       makeLabels(config),
+	}, &container.HostConfig{
+		RestartPolicy: restartPolicy,
+		Mounts:        mounts,
+	}, &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			"jig": {
+				Aliases: []string{internalHostname},
+			},
+		},
+	}, &v1.Platform{}, config.Name)
+	if err != nil {
+		println("Failed to create container", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("Container %s created\n", config.Name)
+
+	err = cli.ContainerStart(context.Background(), config.Name, container.StartOptions{})
+	if err != nil {
+		println("Failed to start container", err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("Container %s started\n", config.Name)
+	if !isJigImage {
+		w.Write([]byte("{\"stream\": \"\\nImage built and container started\"}\n"))
+		w.(http.Flusher).Flush()
+	}
+}
+
+func (d *DeploymentsRouter) deleteDeploy(w http.ResponseWriter, r *http.Request) {
+
+	name := r.PathValue("name")
+	containers, err := d.cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+	})
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, containerInfo := range containers {
+		if containerInfo.Labels["jig.name"] == name {
+			d.cli.ContainerStop(context.Background(), containerInfo.ID, container.StopOptions{})
+			d.cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{})
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
+
+	http.Error(w, "Container not found", http.StatusNotFound)
+}
+
+func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Request) {
+	cli := d.cli
+	name := r.PathValue("name")
+
+	currentDeployment, err := containerExistsWithName(cli, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+	if currentDeployment == nil {
+		log.Printf("Original deployment not found: %s", name)
+		http.Error(w, "Deployment not found", http.StatusNotFound)
+		return
+	}
+	rollbackTarget, err := containerExistsWithName(cli, name+"-prev")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+	if rollbackTarget == nil {
+		log.Printf("Container not found for rollback: %s", name)
+		http.Error(w, "Rollback targer doesn't exist", http.StatusNotFound)
+		return
+	}
+
+	err = cli.ContainerStop(context.Background(), currentDeployment.ID, container.StopOptions{})
+	if err != nil {
+		http.Error(w, "Failed to stop container", http.StatusInternalServerError)
+		return
+	}
+	err = cli.ContainerRename(context.Background(), currentDeployment.ID, name+"-old")
+	if err != nil {
+		http.Error(w, "Failed to rename current container", http.StatusInternalServerError)
+		return
+	}
+
+	err = cli.ContainerRename(context.Background(), rollbackTarget.ID, name)
+	if err != nil {
+		http.Error(w, "Failed to rename rollback container", http.StatusInternalServerError)
+		return
+	}
+	err = cli.ContainerStart(context.Background(), name, container.StartOptions{})
+	if err != nil {
+		http.Error(w, "Failed to start rollback container, trying to restart current deployment", http.StatusInternalServerError)
+		cli.ContainerRename(context.Background(), currentDeployment.ID, name)
+		cli.ContainerStart(context.Background(), name, container.StartOptions{})
+		return
+	}
+
+	err = cli.ContainerRemove(context.Background(), currentDeployment.ID, container.RemoveOptions{})
+	if err != nil {
+		http.Error(w, "Failed to remove old container", http.StatusInternalServerError)
+		return
+	}
+
+}
+
+func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Request) {
+
+	name := r.PathValue("name")
+	containers, err := dr.cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+	})
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	for _, containerInfo := range containers {
+		if containerInfo.Labels["jig.name"] == name {
+			logs, err := dr.cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
+				ShowStdout: true,
+				ShowStderr: true,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Header().Set("Content-Type", "text/plain")
+			io.Copy(w, logs)
+			return
+		}
+	}
+
+	http.Error(w, "Container not found", http.StatusNotFound)
+}
+
+func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.Request) {
+	containers, err := dr.cli.ContainerList(context.Background(), container.ListOptions{
+		Filters: filters.NewArgs(filters.KeyValuePair{Key: "label", Value: "jig.name"}),
+	})
+	if err != nil {
+		log.Print("Failed to list the containers")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+	var allStats []jigtypes.Stats = make([]jigtypes.Stats, 0, len(containers))
+	for _, container := range containers {
+		stats, err := dr.cli.ContainerStatsOneShot(context.Background(), container.ID)
+
+		if err != nil {
+			log.Print("Failed to get container stats info")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		body, err := io.ReadAll(stats.Body)
+		if err != nil {
+			log.Println("Somehow failed to read the body", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+		defer stats.Body.Close()
+		var containerStats types.StatsJSON
+		if err := json.Unmarshal(body, &containerStats); err != nil {
+			log.Println("Failed to unmarshal stats", err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+
+		usedMemory :=
+			containerStats.MemoryStats.Usage -
+				containerStats.MemoryStats.Stats["cache"]
+
+		cpuD :=
+			containerStats.CPUStats.CPUUsage.TotalUsage -
+				containerStats.PreCPUStats.CPUUsage.TotalUsage
+
+		sysCpuD :=
+			containerStats.CPUStats.SystemUsage -
+				containerStats.PreCPUStats.CPUUsage.TotalUsage
+
+		cpuNum := containerStats.CPUStats.OnlineCPUs
+
+		allStats = append(allStats, jigtypes.Stats{
+			Name:             container.Names[0],
+			MemoryBytes:      math.Round((float64(usedMemory)/(1024*1024))*100) / 100,
+			MemoryPercentage: math.Round((float64(usedMemory)/float64(containerStats.MemoryStats.Limit))*10000) / 100,
+			CpuPercentage:    math.Round((float64(cpuD)/float64(sysCpuD))*float64(cpuNum)*10000) / 100,
+		})
+	}
+
+	statsJson, err := json.Marshal(allStats)
+	if err != nil {
+		log.Print("Failed to marshal stats")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(statsJson)
+
+}
+
+func (dr DeploymentsRouter) Router() (r chi.Router) {
+	r = chi.NewRouter()
+	r.Get("/", dr.getDeployments)
+
+	r.Post("/", dr.runDeploy)
+
+	r.Delete("/{name}", dr.deleteDeploy)
+
+	r.Post("/{name}/rollback", dr.rollbackDeployment)
+
+	r.Get("/{name}/logs", dr.getDeploymentLogs)
+
+	r.Get("/stats", dr.getDeploymentStats)
+	return r
 }
 
 func containerExistsWithName(cli *client.Client, name string) (*types.Container, error) {
@@ -572,7 +596,16 @@ func containerExistsWithName(cli *client.Client, name string) (*types.Container,
 		return nil, err
 	}
 	for _, containerInfo := range containers {
-		if containerInfo.Labels["jig.name"] == name {
+
+		namesInclude := false
+		for _, containerName := range containerInfo.Names {
+			if containerName == "/"+name {
+				namesInclude = true
+				break
+			}
+		}
+
+		if containerInfo.Labels["jig.name"] == name || namesInclude {
 			return &containerInfo, nil
 		}
 	}

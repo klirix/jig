@@ -28,11 +28,12 @@ type RateLimitMiddleware struct {
 }
 
 type Deployment struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Rule     string `json:"rule"`
-	Status   string `json:"status"`
-	Lifetime string `json:"lifetime"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Rule        string `json:"rule"`
+	Status      string `json:"status"`
+	Lifetime    string `json:"lifetime"`
+	HasRollback bool   `json:"hasRollback"`
 }
 
 type NewSecretBody struct {
@@ -53,4 +54,16 @@ type Stats struct {
 	CpuPercentage    float64 `json:"cpuPercentage"`
 	MemoryPercentage float64 `json:"memoryPercentage"`
 	MemoryBytes      float64 `json:"memoryBytes"`
+}
+
+type TokenListResponse struct {
+	TokenNames []string `json:"tokens"`
+}
+
+type TokenCreateRequest struct {
+	Name string `json:"name"`
+}
+type TokenCreateResponse struct {
+	Name  string `json:"name"`
+	Token string `json:"token"`
 }

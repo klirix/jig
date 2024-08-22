@@ -2,11 +2,10 @@ package main
 
 import (
 	"archive/tar"
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -14,42 +13,15 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"embed"
+
+	"askh.at/jig/v2/pkgs/client/client_config"
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/urfave/cli/v2"
 )
 
-type Config struct {
-	Endpoint string `json:"endpoint"`
-	Token    string `json:"token"`
-}
-
-var config = Config{
-	Endpoint: os.Getenv("JIG_ENDPOINT"),
-	Token:    os.Getenv("JIG_TOKEN"),
-}
-
-func loadFileConfig() error {
-	// Load config from file
-	homedir, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatal(err)
-	}
-	configFile, err := os.ReadFile(homedir + "/.jig/config.json")
-	if err != nil {
-		if strings.HasSuffix(err.Error(), "no such file or directory") {
-			return nil
-		}
-	}
-	err = json.Unmarshal(configFile, &config)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return nil
-}
+var config, _ = client_config.InitConfig()
 
 var httpClient = &http.Client{}
 
@@ -146,21 +118,13 @@ func (t *TrackableReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func updateConfigUsingToken(token string) Config {
-	strings.Split(token, "+")
-	newConfig := Config{
-		Endpoint: strings.Split(token, "+")[0],
-		Token:    strings.Split(token, "+")[1],
-	}
-	return newConfig
-}
-
 func loginCommand(c *cli.Context) error {
 	token := c.Args().Get(0)
-	config = updateConfigUsingToken(token)
-	configJson, err := json.Marshal(config)
-	if err != nil {
-		log.Fatal("Error marshalling new config", err)
+	if token != "" {
+		err := config.UseTempToken(token)
+		if err != nil {
+			log.Fatal("Error using token: ", err)
+		}
 	}
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
@@ -170,167 +134,19 @@ func loginCommand(c *cli.Context) error {
 	if resp.StatusCode != 200 {
 		log.Fatal("Error connecting to jig ", resp.Status)
 	}
-	homedir, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatal("Failed to get home dir", err)
-	}
-	os.Mkdir(homedir+"/.jig", 0755)
-	os.WriteFile(homedir+"/.jig/config.json", configJson, 0644)
+	config.AddServer(config.Endpoint, config.Token)
+	config.Persist()
 	println("Successfully logged in ✨")
 	return nil
 }
 
 const DEFAULT_CONFIG = "./jig.json"
 
-func deployComment(c *cli.Context) error {
-	if c.String("token") != "" {
-		config = updateConfigUsingToken(c.String("token"))
-	}
-	configFile := DEFAULT_CONFIG // Default config file
-	if c.String("config") != "" {
-		configFile = c.String("config")
-	}
-	_, err := os.Stat(configFile)
-	if err != nil {
-		log.Fatal("No jig.json file found in the current directory")
-	}
-	configContents, err := os.ReadFile(configFile)
-	if err != nil {
-		log.Fatal("Failed to read jig.json", err)
-	}
-	var deploymentConfig jigtypes.DeploymentConfig
-	err = json.Unmarshal(configContents, &deploymentConfig)
-	if err != nil {
-		log.Fatal("Failed to parse jig.json", err)
-	}
-	if deploymentConfig.Name == "" {
-		log.Fatal("Name is required in jig.json")
-	}
-	cleanedconfig := strings.ReplaceAll(string(configContents), "\n", "")
-
-	println("Deploying container")
-
-	ctx := c.Context
-	// docker.ImageBuild(ctx)
-	verbose := c.Bool("verbose")
-
-	ignorePatterns := loadIgnorePatterns(".jigignore")
-
-	var matches = []string{}
-	err = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
-		if info.IsDir() {
-			return nil
-		}
-		matches = append(matches, path)
-		return nil
-	})
-	if err != nil {
-		log.Fatal("Failed to glob the directory", err.Error())
-	}
-
-	filesToPack := filterFiles(matches, ignorePatterns)
-
-	if verbose {
-		println("Files to pack:")
-		for _, file := range filesToPack {
-			println("-", file)
-		}
-	}
-	fmt.Printf("Packing files, ignoring: %v\n", ignorePatterns)
-
-	reader, writer := io.Pipe()
-
-	go func() {
-		tw := tar.NewWriter(writer)
-
-		for _, filename := range filesToPack {
-			writeFileToTar(filename, tw)
-		}
-		if tw.Close() != nil {
-			log.Fatal(err)
-		}
-		writer.Close()
-	}()
-
-	var uploadStream io.ReadCloser = reader
-
-	localBuild := c.Bool("local")
-
-	if localBuild {
-		docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-		if err != nil {
-			log.Fatal("Failed to create docker client", err)
-		}
-		defer docker.Close()
-
-		buildResponse, err := docker.ImageBuild(ctx, reader, types.ImageBuildOptions{
-			Tags:   []string{deploymentConfig.Name + ":latest"},
-			Remove: true,
-		})
-		if err != nil {
-			log.Fatal("Failed to request image build", err.Error())
-		}
-		defer buildResponse.Body.Close()
-
-		buf := bufio.NewScanner(buildResponse.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, false)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
-		}
-
-		newImage, err := docker.ImageSave(ctx, []string{deploymentConfig.Name + ":latest"})
-		if err != nil {
-			log.Fatal("Failed to save image", err.Error())
-		}
-		uploadStream = newImage
-		defer newImage.Close()
-	}
-
-	req, _ := createRequest("POST", "/deployments")
-	req.Header.Add("Content-Type", "application/x-tar")
-
-	req.Header.Add("x-jig-config", string(cleanedconfig))
-	if localBuild {
-		req.Header.Add("x-jig-image", "true")
-	} else {
-		req.Header.Add("x-jig-image", "false")
-	}
-	req.Body = &TrackableReader{ReadCloser: uploadStream}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		log.Fatal("Error making request: ", err)
-	}
-	defer resp.Body.Close()
-
-	if localBuild {
-		if resp.StatusCode != 200 {
-			log.Fatal("Error creating deployment: ", resp.Status)
-		}
-		println("Successfully created a deployment ✨")
-	} else {
-		buf := bufio.NewScanner(resp.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, true)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
-		}
-	}
-
-	return nil
-}
+//go:embed templates/*
+var templates embed.FS
 
 func main() {
-	loadFileConfig()
+	config.ReadFromFile()
 	app := &cli.App{
 		Name: "jig",
 		Commands: []*cli.Command{
@@ -339,6 +155,7 @@ func main() {
 				Usage: "Initiate jig in the directory",
 				Args:  false,
 				Action: func(ctx *cli.Context) error {
+
 					if _, err := os.Stat("./jig.json"); err == nil {
 						log.Fatal("jig.json already exists")
 					}
@@ -347,15 +164,13 @@ func main() {
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
-					err = os.WriteFile("./jig.json", []byte(`{
-  "$schema": "https://deploywithjig.askh.at/jsonschema.json",
-  "name": "`+dirName+`"
-}`), 0644)
+					configTemplate, _ := templates.ReadFile("jig.json")
+					err = os.WriteFile("./jig.json", []byte(strings.Replace(string(configTemplate), "dir-name", dirName, -1)), 0644)
 					if err != nil {
 						log.Fatal("Error writing jig.json: ", err)
 					}
 					os.WriteFile("./.jigignore", []byte(`# This is a list of files to ignore when deploying`), 0644)
-					println("Successfully created a jig.json file ✨")
+					println("Successfully created a jig.jfileson  ✨")
 					return nil
 				},
 			},
@@ -451,7 +266,7 @@ func main() {
 						ArgsUsage: " name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -487,7 +302,7 @@ func main() {
 						ArgsUsage: " name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -517,7 +332,7 @@ func main() {
 						ArgsUsage: "deployment name",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							name := ctx.Args().First()
 							if name == "" {
@@ -550,7 +365,7 @@ func main() {
 						},
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
-								config = updateConfigUsingToken(ctx.String("token"))
+								config.UseTempToken(ctx.String("token"))
 							}
 							req, _ := createRequest("GET", "/deployments/stats")
 							resp, err := httpClient.Do(req)
@@ -583,23 +398,179 @@ func main() {
 				},
 			},
 			{
+				Name: "tokens",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "ls",
+						Usage: "List tokens",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+
+							req, _ := createRequest("GET", "/tokens")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							body, err := io.ReadAll(resp.Body)
+							if err != nil {
+								log.Fatal("Error reading request: ", err)
+							}
+							var tokens jigtypes.TokenListResponse
+							err = json.Unmarshal(body, &tokens)
+
+							if err != nil {
+								println("Error unmarshalling response: ", string(body))
+								log.Fatal("Error unmarshalling response: ", err)
+							}
+
+							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
+							fmt.Fprintln(os.Stdout, []any{"> Tokens:\n"}...)
+							if len(tokens.TokenNames) > 0 {
+								fmt.Fprintln(writer, "  name")
+							} else {
+								fmt.Fprintln(writer, "  No tokens set yet 🤫")
+							}
+							for _, token := range tokens.TokenNames {
+								fmt.Fprintf(writer, "  %s\n", token)
+							}
+							writer.Flush()
+							return nil
+						},
+					},
+					{
+						Name:  "create",
+						Usage: "Create a token",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args: true,
+						Action: func(ctx *cli.Context) error {
+							name := ctx.Args().First()
+							req, _ := createRequest("POST", "/tokens")
+							bodyToSend := jigtypes.TokenCreateRequest{
+								Name: name,
+							}
+							bodyBytes, _ := json.Marshal(bodyToSend)
+
+							req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							if resp.StatusCode != 201 {
+								log.Fatal("Error creating token: ", resp.Status)
+							}
+							var tokenCreateResponse jigtypes.TokenCreateResponse
+							err = json.NewDecoder(resp.Body).Decode(&tokenCreateResponse)
+							if err != nil {
+								log.Fatal("Error reading response: ", err)
+							}
+
+							println("Successfully created a token, keep it safe: ✨")
+							println("Name:", tokenCreateResponse.Name)
+							println("Token:", config.SelectedServer+"+"+tokenCreateResponse.Token)
+							return nil
+						},
+					},
+					{
+						Name:  "delete",
+						Usage: "Delete a token",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args: true,
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							name := ctx.Args().First()
+							if name == "" {
+								log.Fatal("Name is required")
+							}
+							req, _ := createRequest("DELETE", "/tokens/"+name)
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+
+							if resp.StatusCode != 204 {
+								log.Fatal("Error deleting token: ", resp.Status)
+							} else {
+								println("Successfully removed a token ❌")
+							}
+							return nil
+						},
+					},
+				},
+			},
+			{
+				Name: "servers",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "ls",
+						Usage: "List servers",
+						Action: func(ctx *cli.Context) error {
+							println("Available servers:")
+							for server := range config.Servers {
+								println(server)
+							}
+							return nil
+						},
+					},
+					{
+						Name:  "select",
+						Usage: "Select a server",
+						Args:  true,
+						Action: func(ctx *cli.Context) error {
+							server := ctx.Args().First()
+							err := config.SelectServer(server)
+							if err != nil {
+								log.Fatal("Error selecting server: ", err)
+							}
+							println("Successfully selected server: ", server)
+							return nil
+						},
+					},
+					{
+						Name:  "rm",
+						Usage: "Remove a server",
+						Args:  true,
+						Action: func(ctx *cli.Context) error {
+							server := ctx.Args().First()
+							if server == "" {
+								log.Fatal("Server name is required")
+							}
+							delete(config.Servers, server)
+							if config.SelectedServer == server {
+								config.SelectedServer = ""
+								config.Token = ""
+							}
+							config.Persist()
+							println("Successfully removed server: ", server)
+							return nil
+						},
+					},
+				},
+			},
+			{
 				Name: "secrets",
 				Subcommands: []*cli.Command{
 					{
 						Name:    "ls",
 						Aliases: []string{"list"},
 						Usage:   "List secrets",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
-						Action: ListSecrets,
+						Flags:   []cli.Flag{tokenFlag},
+						Action:  ListSecrets,
 					},
 					{
-						Name:  "inspect",
-						Usage: "Inspect a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
+						Name:   "inspect",
+						Usage:  "Inspect a secret",
+						Flags:  []cli.Flag{tokenFlag},
 						Action: InspectSecret,
 					},
 
@@ -608,17 +579,13 @@ func main() {
 						Args:      true,
 						ArgsUsage: "name value",
 						Usage:     "add a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
-						Action: AddSecret,
+						Flags:     []cli.Flag{tokenFlag},
+						Action:    AddSecret,
 					},
 					{
-						Name:  "rm",
-						Usage: "delete a secret",
-						Flags: []cli.Flag{
-							tokenFlag,
-						},
+						Name:   "rm",
+						Usage:  "delete a secret",
+						Flags:  []cli.Flag{tokenFlag},
 						Action: DeleteSecret,
 					},
 				},
@@ -641,7 +608,7 @@ var (
 
 func listDeployments(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/deployments")
 	resp, err := httpClient.Do(req)
@@ -662,17 +629,24 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\trule\tstate\tstatus")
+	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\tlifetime\thas rollback")
 	for _, deployment := range deployments {
-		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime)
+		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime, yesOrNo(deployment.HasRollback))
 	}
 	writer.Flush()
 	return nil
 }
 
+func yesOrNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return ""
+}
+
 func ListSecrets(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/secrets")
 	resp, err := httpClient.Do(req)
@@ -707,7 +681,7 @@ func ListSecrets(ctx *cli.Context) error {
 
 func DeleteSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	name := ctx.Args().Get(0)
@@ -736,7 +710,7 @@ func DeleteSecret(ctx *cli.Context) error {
 
 func InspectSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	name := ctx.Args().Get(0)
@@ -771,7 +745,7 @@ func InspectSecret(ctx *cli.Context) error {
 
 func AddSecret(ctx *cli.Context) error {
 	if ctx.String("token") != "" {
-		config = updateConfigUsingToken(ctx.String("token"))
+		config.UseTempToken(ctx.String("token"))
 	}
 
 	bodyToSend := jigtypes.NewSecretBody{
