@@ -4,7 +4,7 @@ build-server:
 	go build -o bin/server pkgs/server/*
 
 build-client:
-	go build -o bin/jig pkgs/client/client.go
+	go build -o bin/jig pkgs/client/*
 
 build: build-server build-client
 

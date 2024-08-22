@@ -166,6 +166,7 @@ func main() {
 					}
 					configTemplate, _ := templates.ReadFile("jig.json")
 					err = os.WriteFile("./jig.json", []byte(strings.Replace(string(configTemplate), "dir-name", dirName, -1)), 0644)
+
 					if err != nil {
 						log.Fatal("Error writing jig.json: ", err)
 					}
