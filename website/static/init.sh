@@ -41,4 +41,4 @@ docker run -d --name jig \
   askhatsaiapov/jig:latest
 echo 
 echo "Your jig instance should be available on: https://$JIG_DOMAIN"
-docker logs -f --tail 3 jig 
+docker logs --tail 3 jig 
