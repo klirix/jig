@@ -126,7 +126,7 @@
 				<div class="my-5">
 					<CodeBlock
 						language="bash"
-						code="curl -fsSL https://deploywithjig.askh.at/init.sh | bash"
+						code="curl -fsSLO https://deploywithjig.askh.at/init.sh && bash init.sh"
 					/>
 				</div>
 				<p class="">
@@ -141,7 +141,6 @@
 			</div>
 			<div class="px-2 md:px-0 mt-10 space-y-5 text-xl text-gray-800 dark:text-gray-200">
 				<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Client setup</h3>
-				<p>Any node package manager is a prerequisite</p>
 				<div class="my-5">
 					<CodeBlock
 						language="bash"
