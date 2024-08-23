@@ -25,7 +25,7 @@ docker pull askhatsaiapov/jig:latest
 
 
 docker run -d --name jig \
-  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e -e JIG_VERCEL_APIKEY=$JIG_VERCEL_APIKEY -e JIG_DOMAIN=$JIG_DOMAIN \
+  -e JIG_SSL_EMAIL=$JIG_SSL_EMAIL -e JIG_VERCEL_APIKEY=$JIG_VERCEL_APIKEY -e JIG_DOMAIN=$JIG_DOMAIN \
   --label "traefik.http.middlewares.https-only.redirectscheme.scheme=https" \
   --label "traefik.http.middlewares.https-only.redirectscheme.permanent=true" \
   --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
