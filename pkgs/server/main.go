@@ -310,7 +310,7 @@ func serve() {
 	}
 	log.Println("Traefik is running!")
 
-	db, err := createOrOpenDb(defaultSecretsDbPath)
+	db, err := createOrOpenDb("/var/jig/secrets.db")
 	if err != nil {
 		log.Println("Failed to initialize embeded db")
 		panic(err)
