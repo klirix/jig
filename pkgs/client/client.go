@@ -155,7 +155,7 @@ func main() {
 				Usage: "Initiate jig in the directory",
 				Args:  false,
 				Action: func(ctx *cli.Context) error {
-					if _, err := os.Stat("./jig.json"); err == nil {
+					if _, err := os.Stat(DEFAULT_CONFIG); err == nil {
 						log.Fatal("jig.json already exists")
 					}
 					currentDir, err := os.Getwd()
@@ -163,14 +163,14 @@ func main() {
 					if err != nil {
 						log.Fatal("Error getting current directory: ", err)
 					}
-					configTemplate, _ := templates.ReadFile("jig.json")
-					err = os.WriteFile("./jig.json", []byte(strings.Replace(string(configTemplate), "dir-name", dirName, -1)), 0644)
+					configTemplate, _ := templates.ReadFile("templates/jig.json")
+					err = os.WriteFile(DEFAULT_CONFIG, []byte(strings.Replace(string(configTemplate), "dir-name", dirName, -1)), 0644)
 
 					if err != nil {
 						log.Fatal("Error writing jig.json: ", err)
 					}
 					os.WriteFile("./.jigignore", []byte(`# This is a list of files to ignore when deploying`), 0644)
-					println("Successfully created a jig.jfileson  ✨")
+					println("Successfully created a jig.json  ✨")
 					return nil
 				},
 			},
