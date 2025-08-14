@@ -365,15 +365,41 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Declare dHostConfig before usage
+	dHostConfig := &container.HostConfig{
+		RestartPolicy: restartPolicy,
+		Mounts:        mounts,
+	}
+
+	if config.ExposePorts != nil {
+		// config.ExposePorts is a map "<portnum>/<protocol>" => "portnum"
+		for portProto, hostPort := range config.ExposePorts {
+			port, err := nat.NewPort("tcp", portProto)
+			if err != nil {
+				// try udp if tcp fails
+				port, err = nat.NewPort("udp", portProto)
+				if err != nil {
+					http.Error(w, "Invalid port format", http.StatusBadRequest)
+					return
+				}
+			}
+			hostPortBinding := nat.PortBinding{
+				HostIP:   "0.0.0.0",
+				HostPort: hostPort,
+			}
+			if dHostConfig.PortBindings == nil {
+				dHostConfig.PortBindings = nat.PortMap{}
+			}
+			dHostConfig.PortBindings[port] = []nat.PortBinding{hostPortBinding}
+		}
+	}
+
 	_, err = cli.ContainerCreate(context.Background(), &container.Config{
 		ExposedPorts: exposedPorts,
 		Env:          envs,
 		Image:        config.Name + ":latest",
 		Labels:       makeLabels(config),
-	}, &container.HostConfig{
-		RestartPolicy: restartPolicy,
-		Mounts:        mounts,
-	}, &network.NetworkingConfig{
+	}, dHostConfig, &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			"jig": {
 				Aliases: []string{internalHostname},
