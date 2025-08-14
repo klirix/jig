@@ -83,24 +83,24 @@ func filterFiles(matches []string, ignorePatterns []string) []string {
 func writeFileToTar(filename string, tw *tar.Writer) {
 	fileInfo, err := os.Stat(filename)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("Error stating file: ", err)
 	}
-	hdr := &tar.Header{
+	hdr := tar.Header{
 		Name: filename,
 		Mode: int64(fileInfo.Mode()),
 		Size: fileInfo.Size(),
 	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		log.Fatal(err)
+	if err := tw.WriteHeader(&hdr); err != nil {
+		log.Fatal("Error writing tar header: ", err)
 	}
 
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatal("File is not readable", err)
+		log.Fatal("File is not readable: ", err)
 	}
 
 	defer file.Close()
-	io.Copy(tw, file)
+	_, err = io.Copy(tw, file)
 
 	if err != nil {
 		log.Fatalf("Could not copy the file '%s' data to the tarball, got error '%s'", filename, err.Error())

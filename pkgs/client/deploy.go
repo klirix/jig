@@ -77,19 +77,22 @@ func deployComment(c *cli.Context) error {
 
 	reader, writer := io.Pipe()
 
+	var uploadStream io.ReadCloser = reader
+
 	go func() {
 		tw := tar.NewWriter(writer)
 
 		for _, filename := range filesToPack {
 			writeFileToTar(filename, tw)
 		}
-		if tw.Close() != nil {
+		if err := tw.Close(); err != nil {
 			log.Fatal(err)
 		}
-		writer.Close()
-	}()
+		if err := writer.Close(); err != nil {
+			log.Fatal(err)
+		}
 
-	var uploadStream io.ReadCloser = reader
+	}()
 
 	localBuild := c.Bool("local")
 
@@ -99,6 +102,7 @@ func deployComment(c *cli.Context) error {
 			log.Fatal("Failed to create docker client", err)
 		}
 		defer docker.Close()
+		println("Client started")
 
 		buildResponse, err := docker.ImageBuild(ctx, reader, types.ImageBuildOptions{
 			Tags:   []string{deploymentConfig.Name + ":latest"},
@@ -108,6 +112,7 @@ func deployComment(c *cli.Context) error {
 			log.Fatal("Failed to request image build", err.Error())
 		}
 		defer buildResponse.Body.Close()
+		println("Client built image")
 
 		buf := bufio.NewScanner(buildResponse.Body)
 		for buf.Scan() {
@@ -120,12 +125,17 @@ func deployComment(c *cli.Context) error {
 			jsonMessage.Display(os.Stdout, true)
 		}
 
+		println("Image built")
+
 		newImage, err := docker.ImageSave(ctx, []string{deploymentConfig.Name + ":latest"})
 		if err != nil {
 			log.Fatal("Failed to save image", err.Error())
 		}
+		println("Image saved")
 		uploadStream = newImage
 		defer newImage.Close()
+	} else {
+
 	}
 
 	req, _ := createRequest("POST", "/deployments")

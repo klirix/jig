@@ -14,6 +14,13 @@
       "description": "The port to expose the service on",
       "type": "integer"
     },
+    "exposePorts": {
+      "description": "Ports to expose from the service in format 1234/udp => 1234",
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "volumes": {
       "description": "Volumes to mount to the service",
       "type": "array",
