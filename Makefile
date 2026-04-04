@@ -14,3 +14,6 @@ docker:
 
 clean:
 	rm -rf bin
+
+test-integration:
+	env GOCACHE=/tmp/go-build-cache go test -count=1 -tags=integration -run TestComposeDeploymentE2E ./pkgs/server/...

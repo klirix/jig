@@ -188,3 +188,10 @@ Jig currently supports:
 - Traefik is used for HTTP/TLS routing.
 - Compose deployments require `docker compose` to be available on the server.
 - `.jigignore` controls which project files are uploaded during deployment.
+
+## Testing
+
+- Unit tests: `env GOCACHE=/tmp/go-build-cache go test ./...`
+- Compose end-to-end integration tests: `make test-integration`
+- Integration tests require a working Docker daemon and are opt-in through the `integration` build tag.
+- The integration target runs only `TestComposeDeploymentE2E` to avoid unrelated package tests that use a shared on-disk SQLite fixture.
