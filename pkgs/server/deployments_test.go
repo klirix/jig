@@ -1,27 +1,34 @@
 package main
 
 import (
-	"fmt"
+	"encoding/json"
+	"maps"
 	"testing"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 )
 
 func compareLabels(t *testing.T, expected, actual map[string]string) {
-	if len(expected) != len(actual) {
-		fmt.Printf("Actual : %v", actual)
-		t.Errorf("Expected %d labels, but got %d", len(expected), len(actual))
-	}
+	t.Helper()
 
-	for key, value := range expected {
-		if actual[key] != value {
-			t.Errorf("Expected label %s to have value %s, but got %s", key, value, actual[key])
-		}
+	if !maps.Equal(expected, actual) {
+		t.Fatalf("expected labels %#v, got %#v", expected, actual)
 	}
 }
 
 func ptr[T any](b T) *T {
 	return &b
+}
+
+func labelConfigString(t *testing.T, config jigtypes.DeploymentConfig) string {
+	t.Helper()
+
+	configString, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+
+	return string(configString)
 }
 
 func TestMakeLabels(t *testing.T) {
@@ -35,12 +42,14 @@ func TestMakeLabels(t *testing.T) {
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.http.middlewares.https-only.redirectscheme.permanent":     "true",
 			"traefik.http.middlewares.https-only.redirectscheme.scheme":        "https",
 			"traefik.http.routers." + config.Name + `-secure.rule`:             "Host(`jig.app`)",
 			"traefik.http.routers." + config.Name + `-secure.tls.certresolver`: "defaultresolver",
 			"traefik.http.routers." + config.Name + `-secure.tls`:              "true",
 			"traefik.http.routers." + config.Name + `-secure.entrypoints`:      "websecure",
+			"traefik.http.routers." + config.Name + `-secure.middlewares`:      "https-only",
 			"traefik.enable": "true",
 			"traefik.http.routers." + config.Name + `.rule`:        "Host(`jig.app`)",
 			"traefik.http.routers." + config.Name + `.entrypoints`: "web",
@@ -61,12 +70,14 @@ func TestMakeLabels(t *testing.T) {
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.http.middlewares.https-only.redirectscheme.permanent":     "true",
 			"traefik.http.middlewares.https-only.redirectscheme.scheme":        "https",
 			"traefik.http.routers." + config.Name + `-secure.rule`:             "Host(`jig.app`) && PathPrefix(`/api`)",
 			"traefik.http.routers." + config.Name + `-secure.tls.certresolver`: "defaultresolver",
 			"traefik.http.routers." + config.Name + `-secure.tls`:              "true",
 			"traefik.http.routers." + config.Name + `-secure.entrypoints`:      "websecure",
+			"traefik.http.routers." + config.Name + `-secure.middlewares`:      "https-only",
 			"traefik.enable": "true",
 			"traefik.http.routers." + config.Name + `.rule`:        "Host(`jig.app`) && PathPrefix(`/api`)",
 			"traefik.http.routers." + config.Name + `.entrypoints`: "web",
@@ -88,6 +99,7 @@ func TestMakeLabels(t *testing.T) {
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.enable":         "false",
 		}
 
@@ -105,10 +117,10 @@ func TestMakeLabels(t *testing.T) {
 				Compression: ptr(true),
 			},
 		}
-		fmt.Printf("%#v\n", config)
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.http.middlewares.https-only.redirectscheme.permanent":     "true",
 			"traefik.http.middlewares.compress.compress":                       "true",
 			"traefik.http.middlewares.https-only.redirectscheme.scheme":        "https",
@@ -116,6 +128,7 @@ func TestMakeLabels(t *testing.T) {
 			"traefik.http.routers." + config.Name + `-secure.tls.certresolver`: "defaultresolver",
 			"traefik.http.routers." + config.Name + `-secure.tls`:              "true",
 			"traefik.http.routers." + config.Name + `-secure.entrypoints`:      "websecure",
+			"traefik.http.routers." + config.Name + `-secure.middlewares`:      "https-only, compress",
 			"traefik.enable": "true",
 			"traefik.http.routers." + config.Name + `.rule`:        "Host(`jig.app`)",
 			"traefik.http.routers." + config.Name + `.entrypoints`: "web",
@@ -138,10 +151,10 @@ func TestMakeLabels(t *testing.T) {
 				StripPrefix: &[]string{"/papi", "/mami"},
 			},
 		}
-		fmt.Printf("%#v\n", config)
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.http.middlewares.https-only.redirectscheme.permanent":                  "true",
 			"traefik.http.middlewares.compress.compress":                                    "true",
 			"traefik.http.middlewares.addPrefix-" + config.Name + ".addprefix":              "/api",
@@ -151,6 +164,7 @@ func TestMakeLabels(t *testing.T) {
 			"traefik.http.routers." + config.Name + `-secure.tls.certresolver`:              "defaultresolver",
 			"traefik.http.routers." + config.Name + `-secure.tls`:                           "true",
 			"traefik.http.routers." + config.Name + `-secure.entrypoints`:                   "websecure",
+			"traefik.http.routers." + config.Name + `-secure.middlewares`:                   "https-only, compress, addPrefix-" + config.Name + ", stripPrefix-" + config.Name,
 			"traefik.enable": "true",
 			"traefik.http.routers." + config.Name + `.rule`:        "Host(`jig.app`)",
 			"traefik.http.routers." + config.Name + `.entrypoints`: "web",
@@ -174,10 +188,10 @@ func TestMakeLabels(t *testing.T) {
 				},
 			},
 		}
-		fmt.Printf("%#v\n", config)
 		expected := map[string]string{
 			"traefik.docker.network": "jig",
 			"jig.name":               config.Name,
+			"jig.config":             labelConfigString(t, config),
 			"traefik.http.middlewares.https-only.redirectscheme.permanent":             "true",
 			"traefik.http.middlewares.https-only.redirectscheme.scheme":                "https",
 			"traefik.http.middlewares.compress.compress":                               "true",
@@ -187,6 +201,7 @@ func TestMakeLabels(t *testing.T) {
 			"traefik.http.routers." + config.Name + `-secure.tls.certresolver`:         "defaultresolver",
 			"traefik.http.routers." + config.Name + `-secure.tls`:                      "true",
 			"traefik.http.routers." + config.Name + `-secure.entrypoints`:              "websecure",
+			"traefik.http.routers." + config.Name + `-secure.middlewares`:              "https-only, compress, ratelimit-" + config.Name,
 			"traefik.enable": "true",
 			"traefik.http.routers." + config.Name + `.rule`:        "Host(`jig.app`)",
 			"traefik.http.routers." + config.Name + `.entrypoints`: "web",

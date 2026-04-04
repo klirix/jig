@@ -3,14 +3,13 @@ package main
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
-	"log"
+	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types"
@@ -19,159 +18,195 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-func deployComment(c *cli.Context) error {
-	if c.String("token") != "" {
-		config.UseTempToken(c.String("token"))
-	}
-	configFilename := DEFAULT_CONFIG // Default config file
-	if c.String("config") != "" {
-		configFilename = c.String("config")
-	}
-	_, err := os.Stat(configFilename)
-	if err != nil {
-		log.Fatalf("No %s file found in the current directory", configFilename)
-	}
+func loadDeploymentConfig(configFilename string) (jigtypes.DeploymentConfig, string, error) {
 	configContents, err := os.ReadFile(configFilename)
-	if err != nil {
-		log.Fatalf("Failed to read %s: %s", configFilename, err)
+	if os.IsNotExist(err) {
+		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("no %s file found in the current directory", configFilename)
 	}
-	var deploymentConfig jigtypes.DeploymentConfig
-	err = json.Unmarshal(configContents, &deploymentConfig)
 	if err != nil {
-		log.Fatalf("Failed to parse %s: %s", configFilename, err)
+		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("read %s: %w", configFilename, err)
+	}
+
+	var deploymentConfig jigtypes.DeploymentConfig
+	if err := json.Unmarshal(configContents, &deploymentConfig); err != nil {
+		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("parse %s: %w", configFilename, err)
 	}
 	if deploymentConfig.Name == "" {
-		log.Fatalf("Name is required in %s", configFilename)
-	}
-	cleanedconfig := strings.ReplaceAll(string(configContents), "\n", "")
-
-	println("Deploying container")
-
-	ctx := c.Context
-	// docker.ImageBuild(ctx)
-	verbose := c.Bool("verbose")
-
-	ignorePatterns := loadIgnorePatterns(".jigignore")
-
-	var matches = []string{}
-	err = filepath.Walk(".", func(path string, info fs.FileInfo, err error) error {
-		if info.IsDir() {
-			return nil
-		}
-		matches = append(matches, path)
-		return nil
-	})
-	if err != nil {
-		log.Fatal("Failed to glob the directory", err.Error())
+		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("name is required in %s", configFilename)
 	}
 
-	filesToPack := filterFiles(matches, ignorePatterns)
-
-	if verbose {
-		println("Files to pack:")
-		for _, file := range filesToPack {
-			println("-", file)
-		}
+	var compactConfig bytes.Buffer
+	if err := json.Compact(&compactConfig, configContents); err != nil {
+		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("compact %s: %w", configFilename, err)
 	}
-	fmt.Printf("Packing files, ignoring: %v\n", ignorePatterns)
 
+	return deploymentConfig, compactConfig.String(), nil
+}
+
+func newTarStream(filesToPack []string) io.ReadCloser {
 	reader, writer := io.Pipe()
-
-	var uploadStream io.ReadCloser = reader
 
 	go func() {
 		tw := tar.NewWriter(writer)
+		var err error
 
 		for _, filename := range filesToPack {
-			writeFileToTar(filename, tw)
+			if err = writeFileToTar(filename, tw); err != nil {
+				break
+			}
 		}
-		if err := tw.Close(); err != nil {
-			log.Fatal(err)
+		if closeErr := tw.Close(); err == nil {
+			err = closeErr
 		}
-		if err := writer.Close(); err != nil {
-			log.Fatal(err)
+		if err != nil {
+			_ = writer.CloseWithError(err)
+			return
 		}
-
+		_ = writer.Close()
 	}()
 
+	return reader
+}
+
+func displayDockerOutput(stream io.Reader) error {
+	scanner := bufio.NewScanner(stream)
+	scanner.Buffer(make([]byte, 1024), 1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !json.Valid(line) {
+			fmt.Fprintln(os.Stdout, string(line))
+			continue
+		}
+
+		var jsonMessage jsonmessage.JSONMessage
+		if err := json.Unmarshal(line, &jsonMessage); err != nil {
+			return fmt.Errorf("decode docker output: %w", err)
+		}
+		if err := jsonMessage.Display(os.Stdout, true); err != nil {
+			return err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read docker output: %w", err)
+	}
+
+	return nil
+}
+
+func buildAndSaveLocalImage(ctx context.Context, dockerClient *client.Client, imageName string, buildContext io.ReadCloser) (io.ReadCloser, error) {
+	defer buildContext.Close()
+
+	buildResponse, err := dockerClient.ImageBuild(ctx, buildContext, types.ImageBuildOptions{
+		Tags:   []string{imageName + ":latest"},
+		Remove: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("request image build: %w", err)
+	}
+	defer buildResponse.Body.Close()
+
+	if err := displayDockerOutput(buildResponse.Body); err != nil {
+		return nil, fmt.Errorf("build image: %w", err)
+	}
+
+	newImage, err := dockerClient.ImageSave(ctx, []string{imageName + ":latest"})
+	if err != nil {
+		return nil, fmt.Errorf("save image: %w", err)
+	}
+
+	return newImage, nil
+}
+
+func deployCommand(c *cli.Context) error {
+	if token := c.String("token"); token != "" {
+		if err := config.UseTempToken(token); err != nil {
+			return fmt.Errorf("use token: %w", err)
+		}
+	}
+
+	configFilename := c.String("config")
+	if configFilename == "" {
+		configFilename = DEFAULT_CONFIG
+	}
+
+	deploymentConfig, compactConfig, err := loadDeploymentConfig(configFilename)
+	if err != nil {
+		return err
+	}
+
+	ignorePatterns, err := loadIgnorePatterns(".jigignore")
+	if err != nil {
+		return err
+	}
+
+	filesToPack, err := collectFilesToPack(".", ignorePatterns)
+	if err != nil {
+		return err
+	}
+
+	if c.Bool("verbose") {
+		fmt.Println("Files to pack:")
+		for _, file := range filesToPack {
+			fmt.Println("-", file)
+		}
+	}
+	fmt.Printf("Packing %d files, ignoring: %v\n", len(filesToPack), ignorePatterns)
+
+	uploadStream := newTarStream(filesToPack)
+	defer uploadStream.Close()
+
 	localBuild := c.Bool("local")
-
 	if localBuild {
-		docker, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
-			log.Fatal("Failed to create docker client", err)
+			return fmt.Errorf("create docker client: %w", err)
 		}
-		defer docker.Close()
-		println("Client started")
+		defer dockerClient.Close()
 
-		buildResponse, err := docker.ImageBuild(ctx, reader, types.ImageBuildOptions{
-			Tags:   []string{deploymentConfig.Name + ":latest"},
-			Remove: true,
-		})
+		imageStream, err := buildAndSaveLocalImage(c.Context, dockerClient, deploymentConfig.Name, uploadStream)
 		if err != nil {
-			log.Fatal("Failed to request image build", err.Error())
-		}
-		defer buildResponse.Body.Close()
-		println("Client built image")
-
-		buf := bufio.NewScanner(buildResponse.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, false)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
+			return err
 		}
 
-		println("Image built")
-
-		newImage, err := docker.ImageSave(ctx, []string{deploymentConfig.Name + ":latest"})
-		if err != nil {
-			log.Fatal("Failed to save image", err.Error())
-		}
-		println("Image saved")
-		uploadStream = newImage
-		defer newImage.Close()
-	} else {
-
+		uploadStream = imageStream
+		defer uploadStream.Close()
 	}
 
-	req, _ := createRequest("POST", "/deployments")
-	req.Header.Add("Content-Type", "application/x-tar")
-
-	req.Header.Add("x-jig-config", string(cleanedconfig))
-	if localBuild {
-		req.Header.Add("x-jig-image", "true")
-	} else {
-		req.Header.Add("x-jig-image", "false")
+	req, err := createRequest("POST", "/deployments")
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/x-tar")
+	req.Header.Set("x-jig-config", compactConfig)
+	req.Header.Set("x-jig-image", fmt.Sprint(localBuild))
 	req.Body = &TrackableReader{ReadCloser: uploadStream}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		log.Fatal("Error making request: ", err)
+		return fmt.Errorf("make request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if localBuild {
-		if resp.StatusCode != 200 {
-			log.Fatal("Error creating deployment: ", resp.Status)
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("create deployment: %s", resp.Status)
 		}
-		println("Successfully created a deployment ✨")
-	} else {
-		buf := bufio.NewScanner(resp.Body)
-		for buf.Scan() {
-			jsonMessage := jsonmessage.JSONMessage{}
-			json.Unmarshal(buf.Bytes(), &jsonMessage)
-			if jsonMessage.Error != nil {
-				jsonMessage.Display(os.Stdout, true)
-				return jsonMessage.Error
-			}
-			jsonMessage.Display(os.Stdout, true)
+
+		bodyText := bytes.TrimSpace(body)
+		if len(bodyText) == 0 {
+			return fmt.Errorf("create deployment: %s", resp.Status)
 		}
+
+		return fmt.Errorf("create deployment: %s: %s", resp.Status, bodyText)
 	}
 
-	return nil
+	if localBuild {
+		fmt.Println("Successfully created a deployment")
+		return nil
+	}
+
+	return displayDockerOutput(resp.Body)
 }

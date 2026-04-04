@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -27,84 +28,141 @@ var httpClient = &http.Client{}
 
 func createRequest(method, url string) (*http.Request, error) {
 	req, err := http.NewRequest(method, config.Endpoint+url, nil)
-	req.Header.Set("Authorization", "Bearer "+config.Token)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+config.Token)
 	return req, nil
 }
 
-var defaultIgnorePatterns = []string{".git", ".gitignore", ".jig", "docker-compose.yml", "node_modules/**"}
+var defaultIgnorePatterns = []string{".git/**", ".gitignore", ".jig/**", "docker-compose.yml", "node_modules/**"}
 
-func loadIgnorePatterns(ignoreFile string) []string {
-	_, err := os.Stat(ignoreFile)
-	if err != nil {
-		return defaultIgnorePatterns
+func loadIgnorePatterns(ignoreFile string) ([]string, error) {
+	patterns := append([]string{}, defaultIgnorePatterns...)
+
+	ignoreFileContents, err := os.ReadFile(ignoreFile)
+	if os.IsNotExist(err) {
+		return patterns, nil
 	}
-	file, err := os.Open(ignoreFile)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("read %s: %w", ignoreFile, err)
 	}
-	ignoreFileContents, err := io.ReadAll(file)
-	if err != nil {
-		log.Fatal(err)
-	}
-	ignorePatterns := strings.Split(string(ignoreFileContents), "\n")
-	filteredIgnorePatterns := []string{}
-	for _, v := range ignorePatterns {
-		trimmed := strings.TrimSpace(v)
-		if trimmed != "" || strings.HasPrefix(trimmed, "#") {
-			filteredIgnorePatterns = append(filteredIgnorePatterns, trimmed)
+
+	for _, line := range strings.Split(string(ignoreFileContents), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
 		}
+		patterns = append(patterns, trimmed)
 	}
-	return filteredIgnorePatterns
+
+	return patterns, nil
 }
 
-func filterFiles(matches []string, ignorePatterns []string) []string {
-	filesToPack := []string{}
-	for _, filename := range matches {
-		matchedIgnore := false
-		for _, ignorePattern := range ignorePatterns {
-			matched, err := doublestar.Match(ignorePattern, filename)
+func shouldIgnorePath(path string, isDir bool, ignorePatterns []string) (bool, error) {
+	candidates := []string{path}
+	if isDir {
+		candidates = append(candidates, filepath.Join(path, "__jig_ignore_probe__"))
+	}
+
+	ignored := false
+	for _, rawPattern := range ignorePatterns {
+		pattern := rawPattern
+		isNegated := strings.HasPrefix(pattern, "!")
+		if isNegated {
+			pattern = strings.TrimPrefix(pattern, "!")
+		}
+
+		for _, candidate := range candidates {
+			matched, err := doublestar.Match(pattern, candidate)
 			if err != nil {
-				log.Fatal("Failed to match the pattern", err.Error())
+				return false, fmt.Errorf("match pattern %q against %q: %w", rawPattern, candidate, err)
 			}
 			if matched {
-				matchedIgnore = true
+				ignored = !isNegated
+				break
 			}
 		}
-		if !matchedIgnore {
-			filesToPack = append(filesToPack, filename)
-		}
 	}
-	return filesToPack
+
+	return ignored, nil
 }
 
-func writeFileToTar(filename string, tw *tar.Writer) {
+func canSkipIgnoredDir(path string, ignorePatterns []string) bool {
+	dirPrefix := path + string(os.PathSeparator)
+	for _, pattern := range ignorePatterns {
+		if !strings.HasPrefix(pattern, "!") {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimPrefix(pattern, "!"), dirPrefix) {
+			return false
+		}
+	}
+	return true
+}
+
+func collectFilesToPack(root string, ignorePatterns []string) ([]string, error) {
+	filesToPack := []string{}
+
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+
+		ignored, err := shouldIgnorePath(path, d.IsDir(), ignorePatterns)
+		if err != nil {
+			return err
+		}
+		if ignored {
+			if d.IsDir() && canSkipIgnoredDir(path, ignorePatterns) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		filesToPack = append(filesToPack, path)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk %s: %w", root, err)
+	}
+
+	return filesToPack, nil
+}
+
+func writeFileToTar(filename string, tw *tar.Writer) error {
 	fileInfo, err := os.Stat(filename)
 	if err != nil {
-		log.Fatal("Error stating file: ", err)
+		return fmt.Errorf("stat %s: %w", filename, err)
 	}
-	hdr := tar.Header{
-		Name: filename,
-		Mode: int64(fileInfo.Mode()),
-		Size: fileInfo.Size(),
+
+	hdr, err := tar.FileInfoHeader(fileInfo, "")
+	if err != nil {
+		return fmt.Errorf("create tar header for %s: %w", filename, err)
 	}
-	if err := tw.WriteHeader(&hdr); err != nil {
-		log.Fatal("Error writing tar header: ", err)
+	hdr.Name = filename
+
+	if err := tw.WriteHeader(hdr); err != nil {
+		return fmt.Errorf("write tar header for %s: %w", filename, err)
 	}
 
 	file, err := os.Open(filename)
 	if err != nil {
-		log.Fatal("File is not readable: ", err)
+		return fmt.Errorf("open %s: %w", filename, err)
 	}
-
 	defer file.Close()
-	_, err = io.Copy(tw, file)
 
-	if err != nil {
-		log.Fatalf("Could not copy the file '%s' data to the tarball, got error '%s'", filename, err.Error())
+	if _, err := io.Copy(tw, file); err != nil {
+		return fmt.Errorf("copy %s into tarball: %w", filename, err)
 	}
+
+	return nil
 }
 
 type TrackableReader struct {
@@ -211,7 +269,7 @@ func main() {
 					},
 					tokenFlag,
 				},
-				Action: deployComment,
+				Action: deployCommand,
 			},
 			{
 				Name: "deployments",
@@ -247,7 +305,7 @@ func main() {
 							},
 							tokenFlag,
 						},
-						Action: deployComment,
+						Action: deployCommand,
 					},
 
 					{

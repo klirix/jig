@@ -37,13 +37,8 @@ func TestTokenRouter(t *testing.T) {
 		storage: tokens,
 	}
 
-	// Create a new router
 	router := chi.NewRouter()
-	router.Route("/tokens", func(r chi.Router) {
-		r.Get("/", tokenRouter.listTokens)
-		r.Post("/", tokenRouter.createToken)
-		r.Delete("/{id}", tokenRouter.deleteToken)
-	})
+	router.Mount("/tokens", tokenRouter.Router())
 
 	// Test listTokens endpoint
 	t.Run("ListTokens", func(t *testing.T) {
@@ -77,15 +72,15 @@ func TestTokenRouter(t *testing.T) {
 			t.Errorf("expected 2 tokens, got %d", len(tokensResponse.TokenNames))
 		}
 
-		// Assert the token names
-		expectedTokenNames := []string{"token_name", "token_name2"}
-		for i, name := range tokensResponse.TokenNames {
-			if name != expectedTokenNames[i] {
-				t.Errorf("expected token name %s, got %s", expectedTokenNames[i], name)
+		expectedTokenNames := map[string]bool{
+			"token_name":  true,
+			"token_name2": true,
+		}
+		for _, name := range tokensResponse.TokenNames {
+			if !expectedTokenNames[name] {
+				t.Errorf("unexpected token name %s", name)
 			}
 		}
-
-		// Add assertions for the response body if needed
 	})
 
 	// Test createToken endpoint
@@ -105,7 +100,6 @@ func TestTokenRouter(t *testing.T) {
 			t.Errorf("expected status 201, got %d", rr.Code)
 		}
 
-		// Add assertions for the response body if needed
 	})
 
 	// Test deleteToken endpoint
@@ -119,10 +113,18 @@ func TestTokenRouter(t *testing.T) {
 		rr := httptest.NewRecorder()
 		router.ServeHTTP(rr, req)
 
-		if rr.Code != http.StatusOK {
-			t.Errorf("expected status 200, got %d", rr.Code)
+		if rr.Code != http.StatusNoContent {
+			t.Errorf("expected status 204, got %d", rr.Code)
 		}
 
-		// Add assertions for the response body if needed
+		allTokens, err := tokens.List()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, token := range allTokens {
+			if token.Name == "token_name" {
+				t.Fatalf("expected token_name to be deleted, got %+v", token)
+			}
+		}
 	})
 }
