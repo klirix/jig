@@ -91,3 +91,30 @@ func TestCollectFilesToPackHonorsNegatedPatterns(t *testing.T) {
 		t.Fatalf("expected keep.txt in %v", filesToPack)
 	}
 }
+
+func TestResolveComposeFile(t *testing.T) {
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "docker-compose.yaml"), []byte("services: {}\n"), 0644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	composeFile, found, err := resolveComposeFile(tempDir, "")
+	if err != nil {
+		t.Fatalf("resolveComposeFile: %v", err)
+	}
+	if !found {
+		t.Fatal("expected compose file to be detected")
+	}
+	if composeFile != "docker-compose.yaml" {
+		t.Fatalf("expected docker-compose.yaml, got %q", composeFile)
+	}
+}
+
+func TestResolveComposeFileConfiguredMissing(t *testing.T) {
+	tempDir := t.TempDir()
+
+	_, _, err := resolveComposeFile(tempDir, "docker-compose.yaml")
+	if err == nil {
+		t.Fatal("expected an error for missing configured compose file")
+	}
+}

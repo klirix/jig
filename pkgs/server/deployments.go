@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -12,6 +13,9 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -25,13 +29,14 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
 	"github.com/go-chi/chi/v5"
+	"github.com/goccy/go-yaml"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func makeEnvs(newenvs map[string]string, secretDb *Secrets) ([]string, error) {
 	resolvedEnvs := []string{}
 	for key, value := range newenvs {
-		if value[0] == '@' {
+		if strings.HasPrefix(value, "@") {
 			secretValue, found, err := secretDb.Get(value[1:])
 			if !found {
 				return nil, errors.New("Secret not found: " + value)
@@ -44,6 +49,24 @@ func makeEnvs(newenvs map[string]string, secretDb *Secrets) ([]string, error) {
 		resolvedEnvs = append(resolvedEnvs, key+"="+value)
 	}
 	return resolvedEnvs, nil
+}
+
+func makeEnvMap(newenvs map[string]string, secretDb *Secrets) (map[string]string, error) {
+	resolvedEnvs, err := makeEnvs(newenvs, secretDb)
+	if err != nil {
+		return nil, err
+	}
+
+	envMap := make(map[string]string, len(resolvedEnvs))
+	for _, env := range resolvedEnvs {
+		key, value, found := strings.Cut(env, "=")
+		if !found {
+			return nil, fmt.Errorf("invalid environment value %q", env)
+		}
+		envMap[key] = value
+	}
+
+	return envMap, nil
 }
 
 func makeRule(config jigtypes.DeploymentConfig) string {
@@ -133,6 +156,504 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 	return labels
 }
 
+func makeContainerLabels(config jigtypes.DeploymentConfig) map[string]string {
+	labels := map[string]string{
+		"jig.name": config.Name,
+	}
+	if config.ComposeFile != "" {
+		labels["jig.deployment-kind"] = "compose"
+	} else {
+		labels["jig.deployment-kind"] = "container"
+	}
+	return labels
+}
+
+func makeVolumeMounts(config jigtypes.DeploymentConfig) ([]mount.Mount, error) {
+	mounts := []mount.Mount{}
+	for _, volume := range config.Volumes {
+		parts := strings.SplitN(volume, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, errors.New("Invalid volume")
+		}
+		mounts = append(mounts, mount.Mount{
+			Type:   mount.TypeBind,
+			Source: parts[0],
+			Target: parts[1],
+		})
+	}
+	return mounts, nil
+}
+
+func makeRestartPolicy(config jigtypes.DeploymentConfig) (container.RestartPolicy, error) {
+	if config.RestartPolicy == "" {
+		return container.RestartPolicy{}, nil
+	}
+
+	if strings.Contains(config.RestartPolicy, ":") {
+		parts := strings.Split(config.RestartPolicy, ":")
+		retryCount, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return container.RestartPolicy{}, errors.New("Failed to parse retry count")
+		}
+		return container.RestartPolicy{
+			Name:              container.RestartPolicyMode(parts[0]),
+			MaximumRetryCount: retryCount,
+		}, nil
+	}
+
+	return container.RestartPolicy{
+		Name: container.RestartPolicyMode(config.RestartPolicy),
+	}, nil
+}
+
+func untar(dst string, reader io.Reader) error {
+	tr := tar.NewReader(reader)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		target := filepath.Join(dst, header.Name)
+		cleanTarget := filepath.Clean(target)
+		if cleanTarget != dst && !strings.HasPrefix(cleanTarget, dst+string(os.PathSeparator)) {
+			return fmt.Errorf("invalid tar entry %s", header.Name)
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(cleanTarget, os.FileMode(header.Mode)); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(cleanTarget), 0755); err != nil {
+				return err
+			}
+			file, err := os.OpenFile(cleanTarget, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(header.Mode))
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(file, tr); err != nil {
+				file.Close()
+				return err
+			}
+			if err := file.Close(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func yamlQuote(value string) string {
+	return strconv.Quote(value)
+}
+
+type composeProject struct {
+	Services map[string]composeProjectService `yaml:"services"`
+}
+
+type composeProjectService struct {
+	Jig *jigtypes.DeploymentConfig `yaml:"x-jig"`
+}
+
+type composeManagedService struct {
+	ServiceName string
+	Config      jigtypes.DeploymentConfig
+	Envs        map[string]string
+}
+
+func mergeEnvMaps(base, override map[string]string) map[string]string {
+	if len(base) == 0 && len(override) == 0 {
+		return nil
+	}
+
+	merged := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		merged[key] = value
+	}
+	for key, value := range override {
+		merged[key] = value
+	}
+	return merged
+}
+
+func mergeDeploymentConfig(base, override jigtypes.DeploymentConfig, defaultName string) jigtypes.DeploymentConfig {
+	merged := base
+	if override.Name != "" {
+		merged.Name = override.Name
+	} else {
+		merged.Name = defaultName
+	}
+	if override.Port != 0 {
+		merged.Port = override.Port
+	}
+	if override.RestartPolicy != "" {
+		merged.RestartPolicy = override.RestartPolicy
+	}
+	if override.Domain != "" {
+		merged.Domain = override.Domain
+	}
+	if override.Hostname != "" {
+		merged.Hostname = override.Hostname
+	}
+	if override.Rule != "" {
+		merged.Rule = override.Rule
+	}
+	if override.ComposeFile != "" {
+		merged.ComposeFile = override.ComposeFile
+	}
+	if override.ComposeService != "" {
+		merged.ComposeService = override.ComposeService
+	}
+	merged.Envs = mergeEnvMaps(base.Envs, override.Envs)
+	if override.ExposePorts != nil {
+		merged.ExposePorts = override.ExposePorts
+	}
+	if override.Volumes != nil {
+		merged.Volumes = override.Volumes
+	}
+	if override.Middlewares != (jigtypes.DeploymentMiddleares{}) {
+		merged.Middlewares = override.Middlewares
+	}
+	return merged
+}
+
+func validateComposeManagedConfig(config jigtypes.DeploymentConfig) error {
+	if len(config.Volumes) > 0 {
+		return errors.New("Compose deployments must configure volumes in the compose file")
+	}
+	if config.Port != 0 {
+		return errors.New("Compose deployments must configure ports in the compose file")
+	}
+	if len(config.ExposePorts) > 0 {
+		return errors.New("Compose deployments must configure published ports in the compose file")
+	}
+	if config.ComposeFile != "" || config.ComposeService != "" {
+		return errors.New("Per-service compose Jig config cannot set composeFile or composeService")
+	}
+	return nil
+}
+
+func loadComposeProject(workdir, composeFile string) (composeProject, error) {
+	output, err := os.ReadFile(filepath.Join(workdir, composeFile))
+	if err != nil {
+		return composeProject{}, err
+	}
+	var project composeProject
+	if err := yaml.Unmarshal(output, &project); err != nil {
+		return composeProject{}, err
+	}
+	return project, nil
+}
+
+func collectManagedComposeServices(project composeProject, baseConfig jigtypes.DeploymentConfig, secretDB *Secrets) ([]composeManagedService, error) {
+	serviceNames := make([]string, 0, len(project.Services))
+	for serviceName := range project.Services {
+		serviceNames = append(serviceNames, serviceName)
+	}
+	slices.Sort(serviceNames)
+
+	baseDefaults := baseConfig
+	baseDefaults.Name = ""
+	baseDefaults.ComposeFile = ""
+	baseDefaults.ComposeService = ""
+	baseDefaults.Port = 0
+	baseDefaults.ExposePorts = nil
+	baseDefaults.Volumes = nil
+
+	managed := []composeManagedService{}
+	seenNames := map[string]string{}
+	for _, serviceName := range serviceNames {
+		service := project.Services[serviceName]
+		if service.Jig == nil {
+			continue
+		}
+
+		config := mergeDeploymentConfig(baseDefaults, *service.Jig, baseConfig.Name+"-"+serviceName)
+		if err := validateComposeManagedConfig(config); err != nil {
+			return nil, fmt.Errorf("service %s: %w", serviceName, err)
+		}
+
+		if previousService, exists := seenNames[config.Name]; exists {
+			return nil, fmt.Errorf("services %s and %s both resolve to deployment name %s", previousService, serviceName, config.Name)
+		}
+		seenNames[config.Name] = serviceName
+
+		envs, err := makeEnvMap(config.Envs, secretDB)
+		if err != nil {
+			return nil, fmt.Errorf("service %s: %w", serviceName, err)
+		}
+
+		managed = append(managed, composeManagedService{
+			ServiceName: serviceName,
+			Config:      config,
+			Envs:        envs,
+		})
+	}
+
+	return managed, nil
+}
+
+func legacyComposeManagedService(baseConfig jigtypes.DeploymentConfig, services []string, secretDB *Secrets) ([]composeManagedService, error) {
+	if len(baseConfig.Volumes) > 0 {
+		return nil, errors.New("Compose deployments must configure volumes in the compose file")
+	}
+	if baseConfig.Port != 0 {
+		return nil, errors.New("Compose deployments must configure ports in the compose file")
+	}
+	if len(baseConfig.ExposePorts) > 0 {
+		return nil, errors.New("Compose deployments must configure published ports in the compose file")
+	}
+
+	primaryService, err := pickComposePrimaryService(baseConfig, services)
+	if err != nil {
+		return nil, err
+	}
+	envMap, err := makeEnvMap(baseConfig.Envs, secretDB)
+	if err != nil {
+		return nil, err
+	}
+
+	config := baseConfig
+	config.Port = 0
+	config.ExposePorts = nil
+	config.Volumes = nil
+
+	return []composeManagedService{{
+		ServiceName: primaryService,
+		Config:      config,
+		Envs:        envMap,
+	}}, nil
+}
+
+func makeComposeOverride(managedServices []composeManagedService) string {
+	var builder strings.Builder
+	builder.WriteString("services:\n")
+	services := append([]composeManagedService{}, managedServices...)
+	slices.SortFunc(services, func(a, b composeManagedService) int {
+		return strings.Compare(a.ServiceName, b.ServiceName)
+	})
+
+	for _, service := range services {
+		builder.WriteString("  " + yamlQuote(service.ServiceName) + ":\n")
+		if service.Config.RestartPolicy != "" {
+			builder.WriteString("    restart: " + yamlQuote(service.Config.RestartPolicy) + "\n")
+		}
+		if len(service.Envs) > 0 {
+			builder.WriteString("    environment:\n")
+			keys := make([]string, 0, len(service.Envs))
+			for key := range service.Envs {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			for _, key := range keys {
+				builder.WriteString("      " + yamlQuote(key) + ": " + yamlQuote(service.Envs[key]) + "\n")
+			}
+		}
+
+		labels := makeContainerLabels(service.Config)
+		maps.Copy(labels, makeLabels(service.Config))
+		if len(labels) > 0 {
+			builder.WriteString("    labels:\n")
+			keys := make([]string, 0, len(labels))
+			for key := range labels {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			for _, key := range keys {
+				builder.WriteString("      " + yamlQuote(key) + ": " + yamlQuote(labels[key]) + "\n")
+			}
+		}
+	}
+	return builder.String()
+}
+
+func runComposeCommand(workdir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
+	cmd.Dir = workdir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}
+
+func listComposeServices(workdir, composeFile string) ([]string, error) {
+	output, err := runComposeCommand(workdir, "-f", composeFile, "config", "--services")
+	if err != nil {
+		return nil, err
+	}
+
+	services := []string{}
+	for _, line := range strings.Split(string(output), "\n") {
+		service := strings.TrimSpace(line)
+		if service != "" {
+			services = append(services, service)
+		}
+	}
+	if len(services) == 0 {
+		return nil, errors.New("docker compose did not return any services")
+	}
+	return services, nil
+}
+
+func pickComposePrimaryService(config jigtypes.DeploymentConfig, services []string) (string, error) {
+	if config.ComposeService != "" {
+		if slices.Contains(services, config.ComposeService) {
+			return config.ComposeService, nil
+		}
+		return "", fmt.Errorf("compose service %s not found", config.ComposeService)
+	}
+	if slices.Contains(services, config.Name) {
+		return config.Name, nil
+	}
+	if len(services) == 1 {
+		return services[0], nil
+	}
+	return services[0], nil
+}
+
+func internalHostname(config jigtypes.DeploymentConfig) string {
+	if config.Hostname != "" {
+		return config.Hostname
+	}
+	return config.Name
+}
+
+func connectComposePrimaryServiceToNetwork(cli *client.Client, projectName, serviceName, alias string) error {
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+		Filters: filters.NewArgs(
+			filters.Arg("label", "com.docker.compose.project="+projectName),
+			filters.Arg("label", "com.docker.compose.service="+serviceName),
+		),
+	})
+	if err != nil {
+		return err
+	}
+	if len(containers) == 0 {
+		return fmt.Errorf("compose deployment did not create any containers for service %s", serviceName)
+	}
+
+	for _, containerInfo := range containers {
+		err := cli.NetworkConnect(context.Background(), "jig", containerInfo.ID, &network.EndpointSettings{
+			Aliases: []string{alias},
+		})
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			return err
+		}
+	}
+	return nil
+}
+
+func connectManagedComposeServicesToNetwork(cli *client.Client, projectName string, managedServices []composeManagedService) error {
+	for _, service := range managedServices {
+		if err := connectComposePrimaryServiceToNetwork(cli, projectName, service.ServiceName, internalHostname(service.Config)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeDeploymentContainers(cli *client.Client, name string) (bool, error) {
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{
+		All: true,
+	})
+	if err != nil {
+		return false, err
+	}
+
+	found := false
+	for _, containerInfo := range containers {
+		if containerInfo.Labels["jig.name"] != name {
+			continue
+		}
+		found = true
+		if err := cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{Force: true}); err != nil {
+			return true, err
+		}
+	}
+	return found, nil
+}
+
+func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request, config jigtypes.DeploymentConfig) {
+	tempDir, err := os.MkdirTemp("", "jig-compose-*")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer os.RemoveAll(tempDir)
+
+	if err := untar(tempDir, r.Body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	composePath := filepath.Join(tempDir, config.ComposeFile)
+	if _, err := os.Stat(composePath); err != nil {
+		http.Error(w, fmt.Sprintf("compose file %s not found in upload", config.ComposeFile), http.StatusBadRequest)
+		return
+	}
+
+	project, err := loadComposeProject(tempDir, config.ComposeFile)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("parse compose file: %s", err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	services, err := listComposeServices(tempDir, config.ComposeFile)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	managedServices, err := collectManagedComposeServices(project, config, d.secret_db)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if len(managedServices) == 0 {
+		managedServices, err = legacyComposeManagedService(config, services, d.secret_db)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	for _, service := range managedServices {
+		if _, err := removeDeploymentContainers(d.cli, service.Config.Name); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	overridePath := filepath.Join(tempDir, ".jig.compose.override.yaml")
+	overrideContents := makeComposeOverride(managedServices)
+	if err := os.WriteFile(overridePath, []byte(overrideContents), 0644); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	output, err := runComposeCommand(tempDir, "-p", config.Name, "-f", config.ComposeFile, "-f", filepath.Base(overridePath), "up", "-d", "--build", "--remove-orphans")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := connectManagedComposeServicesToNetwork(d.cli, config.Name, managedServices); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	if len(output) > 0 {
+		w.Write(output)
+	}
+}
+
 type DeploymentsRouter struct {
 	cli       *client.Client
 	secret_db *Secrets
@@ -150,6 +671,7 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 
 	deployments := []jigtypes.Deployment{}
 	deploymentHasRollback := make(map[string]bool)
+	representativeContainers := map[string]types.Container{}
 	for _, container := range containers {
 		name, isJigDeployment := container.Labels["jig.name"]
 		if !isJigDeployment {
@@ -158,17 +680,18 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 		if ("/" + container.Labels["jig.name"] + "-prev") == container.Names[0] {
 			deploymentHasRollback[name] = true
 		}
+		if current, exists := representativeContainers[name]; !exists || container.Labels["jig.primary"] == "true" || current.Labels["jig.primary"] != "true" {
+			representativeContainers[name] = container
+		}
 	}
 
-	for _, container := range containers {
-		name, isJigDeployment := container.Labels["jig.name"]
-		if !isJigDeployment || ("/"+name+"-prev") == container.Names[0] {
+	for name, container := range representativeContainers {
+		if len(container.Names) > 0 && ("/"+name+"-prev") == container.Names[0] {
 			continue
 		}
-
 		deployments = append(deployments, jigtypes.Deployment{
 			ID:          container.ID,
-			Name:        container.Labels["jig.name"],
+			Name:        name,
 			Rule:        container.Labels["traefik.http.routers."+name+`-secure.rule`],
 			Status:      container.State,
 			Lifetime:    container.Status,
@@ -204,6 +727,14 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	if config.Name == "" {
 		http.Error(w, "Name is required", http.StatusBadRequest)
+		return
+	}
+	if config.ComposeFile != "" {
+		if isJigImage {
+			http.Error(w, "Compose deployments do not support prebuilt image uploads", http.StatusBadRequest)
+			return
+		}
+		d.deployCompose(w, r, config)
 		return
 	}
 
@@ -324,45 +855,19 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var restartPolicy container.RestartPolicy
-	if strings.Contains(config.RestartPolicy, ":") {
-		parts := strings.Split(config.RestartPolicy, ":")
-		retryCount, err := strconv.Atoi(parts[1])
-		if err != nil {
-			println("Failed to parse retry count", err.Error())
-			http.Error(w, "Failed to parse retry count", http.StatusInternalServerError)
-			return
-		}
-		restartPolicy = container.RestartPolicy{
-			Name:              container.RestartPolicyMode(parts[0]),
-			MaximumRetryCount: retryCount,
-		}
-	} else {
-		restartPolicy = container.RestartPolicy{
-			Name: container.RestartPolicyMode(config.RestartPolicy),
-		}
+	restartPolicy, err := makeRestartPolicy(config)
+	if err != nil {
+		println(err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	internalHostname := config.Name
-	if config.Hostname != "" {
-		internalHostname = config.Hostname
-	}
+	internalHostname := internalHostname(config)
 
-	mounts := []mount.Mount{}
-
-	if config.Volumes != nil {
-		for _, volume := range config.Volumes {
-			parts := strings.Split(volume, ":")
-			if parts[0] == "" || parts[1] == "" {
-				http.Error(w, "Invalid volume", http.StatusBadRequest)
-				return
-			}
-			mounts = append(mounts, mount.Mount{
-				Type:   mount.TypeBind,
-				Source: parts[0],
-				Target: parts[1],
-			})
-		}
+	mounts, err := makeVolumeMounts(config)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Declare dHostConfig before usage
@@ -394,11 +899,14 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	labels := makeContainerLabels(config)
+	maps.Copy(labels, makeLabels(config))
+
 	_, err = cli.ContainerCreate(context.Background(), &container.Config{
 		ExposedPorts: exposedPorts,
 		Env:          envs,
 		Image:        config.Name + ":latest",
-		Labels:       makeLabels(config),
+		Labels:       labels,
 	}, dHostConfig, &network.NetworkingConfig{
 		EndpointsConfig: map[string]*network.EndpointSettings{
 			"jig": {
@@ -429,25 +937,16 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 func (d *DeploymentsRouter) deleteDeploy(w http.ResponseWriter, r *http.Request) {
 
 	name := r.PathValue("name")
-	containers, err := d.cli.ContainerList(context.Background(), container.ListOptions{
-		All: true,
-	})
-
+	found, err := removeDeploymentContainers(d.cli, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	for _, containerInfo := range containers {
-		if containerInfo.Labels["jig.name"] == name {
-			d.cli.ContainerStop(context.Background(), containerInfo.ID, container.StopOptions{})
-			d.cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{})
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
+	if !found {
+		http.Error(w, "Container not found", http.StatusNotFound)
+		return
 	}
-
-	http.Error(w, "Container not found", http.StatusNotFound)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Request) {
@@ -470,6 +969,10 @@ func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Re
 	if rollbackTarget == nil {
 		log.Printf("Container not found for rollback: %s", name)
 		http.Error(w, "Rollback targer doesn't exist", http.StatusNotFound)
+		return
+	}
+	if currentDeployment.Labels["jig.deployment-kind"] == "compose" || rollbackTarget.Labels["jig.deployment-kind"] == "compose" {
+		http.Error(w, "Rollback is not supported for compose deployments", http.StatusBadRequest)
 		return
 	}
 
@@ -517,6 +1020,8 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	found := false
+	w.Header().Set("Content-Type", "text/plain")
 	for _, containerInfo := range containers {
 		if containerInfo.Labels["jig.name"] == name {
 			logs, err := dr.cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
@@ -527,14 +1032,18 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
-			w.WriteHeader(http.StatusOK)
-			w.Header().Set("Content-Type", "text/plain")
+			found = true
+			if len(containerInfo.Names) > 0 {
+				fmt.Fprintf(w, "== %s ==\n", strings.TrimPrefix(containerInfo.Names[0], "/"))
+			}
 			io.Copy(w, logs)
-			return
+			fmt.Fprint(w, "\n")
 		}
 	}
 
-	http.Error(w, "Container not found", http.StatusNotFound)
+	if !found {
+		http.Error(w, "Container not found", http.StatusNotFound)
+	}
 }
 
 func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.Request) {

@@ -1,31 +1,33 @@
 package jigtypes
 
 type DeploymentConfig struct {
-	Name          string               `json:"name"`
-	Port          int                  `json:"port"`
-	RestartPolicy string               `json:"restartPolicy"`
-	Domain        string               `json:"domain"`
-	Hostname      string               `json:"hostname"`
-	Rule          string               `json:"rule"`
-	Envs          map[string]string    `json:"envs"`
-	ExposePorts   map[string]string    `json:"exposePorts"`
-	Volumes       []string             `json:"volumes"`
-	Middlewares   DeploymentMiddleares `json:"middlewares"`
+	Name           string               `json:"name" yaml:"name"`
+	Port           int                  `json:"port" yaml:"port"`
+	RestartPolicy  string               `json:"restartPolicy" yaml:"restartPolicy"`
+	Domain         string               `json:"domain" yaml:"domain"`
+	Hostname       string               `json:"hostname" yaml:"hostname"`
+	Rule           string               `json:"rule" yaml:"rule"`
+	ComposeFile    string               `json:"composeFile" yaml:"composeFile"`
+	ComposeService string               `json:"composeService" yaml:"composeService"`
+	Envs           map[string]string    `json:"envs" yaml:"envs"`
+	ExposePorts    map[string]string    `json:"exposePorts" yaml:"exposePorts"`
+	Volumes        []string             `json:"volumes" yaml:"volumes"`
+	Middlewares    DeploymentMiddleares `json:"middlewares" yaml:"middlewares"`
 }
 
 type DeploymentMiddleares struct {
-	NoTLS        *bool                `json:"noTLS"`
-	NoHTTP       *bool                `json:"noHTTP"`
-	RateLimiting *RateLimitMiddleware `json:"rateLimiting"`
-	StripPrefix  *[]string            `json:"stripPrefix"`
-	AddPrefix    *string              `json:"addPrefix"`
-	Compression  *bool                `json:"compression"`
-	BasicAuth    *[]string            `json:"basicAuth"`
+	NoTLS        *bool                `json:"noTLS" yaml:"noTLS"`
+	NoHTTP       *bool                `json:"noHTTP" yaml:"noHTTP"`
+	RateLimiting *RateLimitMiddleware `json:"rateLimiting" yaml:"rateLimiting"`
+	StripPrefix  *[]string            `json:"stripPrefix" yaml:"stripPrefix"`
+	AddPrefix    *string              `json:"addPrefix" yaml:"addPrefix"`
+	Compression  *bool                `json:"compression" yaml:"compression"`
+	BasicAuth    *[]string            `json:"basicAuth" yaml:"basicAuth"`
 }
 
 type RateLimitMiddleware struct {
-	Average int `json:"average"`
-	Burst   int `json:"burst"`
+	Average int `json:"average" yaml:"average"`
+	Burst   int `json:"burst" yaml:"burst"`
 }
 
 type Deployment struct {

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types"
@@ -18,29 +19,24 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-func loadDeploymentConfig(configFilename string) (jigtypes.DeploymentConfig, string, error) {
+func loadDeploymentConfig(configFilename string) (jigtypes.DeploymentConfig, error) {
 	configContents, err := os.ReadFile(configFilename)
 	if os.IsNotExist(err) {
-		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("no %s file found in the current directory", configFilename)
+		return jigtypes.DeploymentConfig{}, fmt.Errorf("no %s file found in the current directory", configFilename)
 	}
 	if err != nil {
-		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("read %s: %w", configFilename, err)
+		return jigtypes.DeploymentConfig{}, fmt.Errorf("read %s: %w", configFilename, err)
 	}
 
 	var deploymentConfig jigtypes.DeploymentConfig
 	if err := json.Unmarshal(configContents, &deploymentConfig); err != nil {
-		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("parse %s: %w", configFilename, err)
+		return jigtypes.DeploymentConfig{}, fmt.Errorf("parse %s: %w", configFilename, err)
 	}
 	if deploymentConfig.Name == "" {
-		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("name is required in %s", configFilename)
+		return jigtypes.DeploymentConfig{}, fmt.Errorf("name is required in %s", configFilename)
 	}
 
-	var compactConfig bytes.Buffer
-	if err := json.Compact(&compactConfig, configContents); err != nil {
-		return jigtypes.DeploymentConfig{}, "", fmt.Errorf("compact %s: %w", configFilename, err)
-	}
-
-	return deploymentConfig, compactConfig.String(), nil
+	return deploymentConfig, nil
 }
 
 func newTarStream(filesToPack []string) io.ReadCloser {
@@ -119,6 +115,35 @@ func buildAndSaveLocalImage(ctx context.Context, dockerClient *client.Client, im
 	return newImage, nil
 }
 
+func resolveComposeFile(root, configured string) (string, bool, error) {
+	candidates := []string{}
+	if configured != "" {
+		candidates = append(candidates, configured)
+	} else {
+		candidates = append(candidates, "docker-compose.yaml", "docker-compose.yml", "compose.yaml", "compose.yml")
+	}
+
+	for _, candidate := range candidates {
+		composePath := filepath.Join(root, candidate)
+		info, err := os.Stat(composePath)
+		if os.IsNotExist(err) {
+			if configured != "" {
+				return "", false, fmt.Errorf("compose file %s not found", candidate)
+			}
+			continue
+		}
+		if err != nil {
+			return "", false, fmt.Errorf("stat compose file %s: %w", candidate, err)
+		}
+		if info.IsDir() {
+			return "", false, fmt.Errorf("compose file %s is a directory", candidate)
+		}
+		return candidate, true, nil
+	}
+
+	return "", false, nil
+}
+
 func deployCommand(c *cli.Context) error {
 	if token := c.String("token"); token != "" {
 		if err := config.UseTempToken(token); err != nil {
@@ -131,9 +156,17 @@ func deployCommand(c *cli.Context) error {
 		configFilename = DEFAULT_CONFIG
 	}
 
-	deploymentConfig, compactConfig, err := loadDeploymentConfig(configFilename)
+	deploymentConfig, err := loadDeploymentConfig(configFilename)
 	if err != nil {
 		return err
+	}
+
+	composeFile, hasComposeFile, err := resolveComposeFile(".", deploymentConfig.ComposeFile)
+	if err != nil {
+		return err
+	}
+	if hasComposeFile {
+		deploymentConfig.ComposeFile = composeFile
 	}
 
 	ignorePatterns, err := loadIgnorePatterns(".jigignore")
@@ -158,6 +191,9 @@ func deployCommand(c *cli.Context) error {
 	defer uploadStream.Close()
 
 	localBuild := c.Bool("local")
+	if hasComposeFile && localBuild {
+		return fmt.Errorf("local image deployments are not supported with compose files")
+	}
 	if localBuild {
 		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
@@ -174,12 +210,17 @@ func deployCommand(c *cli.Context) error {
 		defer uploadStream.Close()
 	}
 
+	compactConfigBytes, err := json.Marshal(deploymentConfig)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
 	req, err := createRequest("POST", "/deployments")
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-tar")
-	req.Header.Set("x-jig-config", compactConfig)
+	req.Header.Set("x-jig-config", string(compactConfigBytes))
 	req.Header.Set("x-jig-image", fmt.Sprint(localBuild))
 	req.Body = &TrackableReader{ReadCloser: uploadStream}
 

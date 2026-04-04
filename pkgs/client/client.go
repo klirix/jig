@@ -35,7 +35,7 @@ func createRequest(method, url string) (*http.Request, error) {
 	return req, nil
 }
 
-var defaultIgnorePatterns = []string{".git/**", ".gitignore", ".jig/**", "docker-compose.yml", "node_modules/**"}
+var defaultIgnorePatterns = []string{".git/**", ".gitignore", ".jig/**", "node_modules/**"}
 
 func loadIgnorePatterns(ignoreFile string) ([]string, error) {
 	patterns := append([]string{}, defaultIgnorePatterns...)
