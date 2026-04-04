@@ -68,19 +68,33 @@ Supported `jig.json` fields in this mode:
 
 Example:
 
+Minimal regular deployment:
+
+`jig.json`
+
 ```json
 {
-  "name": "my-app",
+  "name": "frontend",
   "domain": "app.example.com",
   "port": 3000,
   "restartPolicy": "unless-stopped",
   "envs": {
-    "DATABASE_URL": "@database-url"
+    "API_URL": "https://api.example.com",
+    "SESSION_SECRET": "@session-secret"
   },
-  "volumes": [
-    "/var/lib/my-app:/app/data"
-  ]
+  "volumes": ["/var/lib/my-app:/app/data"]
 }
+```
+
+`Dockerfile`
+
+```dockerfile
+FROM node:22-alpine
+WORKDIR /app
+COPY . .
+RUN npm install
+RUN npm run build
+CMD ["npm", "start"]
 ```
 
 ### Compose deployments
@@ -147,6 +161,22 @@ services:
   db:
     image: postgres:16
 ```
+
+Matching top-level `jig.json` for the compose project:
+
+```json
+{
+  "name": "my-stack",
+  "composeFile": "docker-compose.yaml",
+  "restartPolicy": "unless-stopped"
+}
+```
+
+This gives you:
+
+- one Jig deployment named `frontend` routed at `app.example.com`
+- one Jig deployment named `api` routed at `api.example.com`
+- one internal `db` service that still runs but does not appear as its own Jig deployment
 
 ## Secrets
 
