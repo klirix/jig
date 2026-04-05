@@ -28,6 +28,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const defaultSwarmIngressLabel = "jig.ingress=true"
+
 func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 	if backend == deploymentBackendSwarm {
 		return ensureSwarmTraefikRunning(cli)
@@ -193,6 +195,9 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 				},
 			},
 			Networks: []swarm.NetworkAttachmentConfig{{Target: "jig"}},
+			Placement: &swarm.Placement{
+				Constraints: []string{"node.labels." + strings.ReplaceAll(defaultSwarmIngressLabel, "=", " == ")},
+			},
 			RestartPolicy: &swarm.RestartPolicy{
 				Condition: swarm.RestartPolicyConditionAny,
 			},

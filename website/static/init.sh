@@ -19,6 +19,7 @@ fi
 
 SWARM_STATE="$(docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null || true)"
 SWARM_CONTROL="$(docker info --format '{{.Swarm.ControlAvailable}}' 2>/dev/null || true)"
+SWARM_NODE_ID="$(docker info --format '{{.Swarm.NodeID}}' 2>/dev/null || true)"
 
 ensure_swarm_network() {
   if ! docker network inspect jig >/dev/null 2>&1; then
@@ -26,10 +27,20 @@ ensure_swarm_network() {
   fi
 }
 
+ensure_swarm_ingress_label() {
+  if [[ -z "$SWARM_NODE_ID" ]]; then
+    echo "Failed to determine current Swarm node ID" >&2
+    exit 1
+  fi
+
+  docker node update --label-add jig.ingress=true "$SWARM_NODE_ID" >/dev/null
+}
+
 install_swarm() {
   mkdir -p /var/jig
 
   ensure_swarm_network
+  ensure_swarm_ingress_label
 
   docker service rm jig >/dev/null 2>&1 || true
   docker pull askhatsaiapov/jig:latest
@@ -59,6 +70,7 @@ install_swarm() {
 
   echo
   echo "Detected Docker Swarm manager, deployed Jig as a service."
+  echo "Marked the current manager node with jig.ingress=true for Traefik placement."
   echo "Your jig instance should be available on: https://$JIG_DOMAIN"
   echo "Tail logs with: docker service logs -f jig"
   docker service logs jig --tail 20 || true

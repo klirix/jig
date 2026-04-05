@@ -29,7 +29,20 @@ This installs Traefik and Jig, asks for the initial settings, and prints a login
 
 Use this path when the Jig server itself should run on a Docker Swarm manager and deploy single-service apps as Swarm services.
 
-The current `init.sh` script is for the standalone Docker mode. For Swarm, deploy the server manually:
+The easiest path is still the bootstrap script:
+
+```bash
+curl -fsSL https://deploywithjig.askh.at/init.sh | bash
+```
+
+On a Swarm manager, the script now:
+
+- detects Swarm automatically
+- labels the current node with `jig.ingress=true`
+- deploys the `jig` server as a Swarm service
+- lets the server create Traefik as a Swarm service pinned to nodes with `jig.ingress=true`
+
+Manual setup is still available if you want to control it directly:
 
 1. Initialize Swarm on the manager node if it is not already active:
 
@@ -65,7 +78,13 @@ If you do not use Vercel DNS challenge, leave `JIG_VERCEL_APIKEY` unset and Jig 
 docker pull askhatsaiapov/jig:latest
 ```
 
-6. Deploy the Jig server itself as a Swarm service on a manager node:
+6. Label the internet-facing node for ingress placement:
+
+```bash
+docker node update --label-add jig.ingress=true <node-name>
+```
+
+7. Deploy the Jig server itself as a Swarm service on a manager node:
 
 ```bash
 docker service create \
@@ -92,7 +111,7 @@ docker service create \
   askhatsaiapov/jig:latest
 ```
 
-7. Watch the service logs until startup completes:
+8. Watch the service logs until startup completes:
 
 ```bash
 docker service logs -f jig
@@ -100,7 +119,7 @@ docker service logs -f jig
 
 On startup, Jig will detect that it is running on a Swarm manager, ensure the `jig` overlay network exists, and create a central Traefik Swarm service if one is not already present.
 
-8. Fetch the initial login token from the service logs:
+9. Fetch the initial login token from the service logs:
 
 ```bash
 docker service logs jig --tail 50
@@ -108,9 +127,9 @@ docker service logs jig --tail 50
 
 Look for the printed `jig login https://...+TOKEN` line and use that on your workstation.
 
-9. Point DNS for `JIG_DOMAIN` at the Swarm manager or the nodes handling the published Traefik ports `80` and `443`.
+10. Point DNS for `JIG_DOMAIN` at the node or nodes that handle the published Traefik ports `80` and `443`. By default that should be the node labeled `jig.ingress=true`.
 
-10. Deploy applications normally with `jig deploy`.
+11. Deploy applications normally with `jig deploy`.
 
 Notes for Swarm-backed deployments:
 
@@ -119,6 +138,7 @@ Notes for Swarm-backed deployments:
 - Swarm apps with bind mounts must set `placement.requiredNodeLabels` in `jig.json`.
 - Jig stats are not available for Swarm deployments.
 - The Jig server service should stay constrained to a manager because it needs Docker API access and Swarm control-plane access.
+- Traefik is pinned to nodes labeled `jig.ingress=true`.
 
 ### Client setup
 
