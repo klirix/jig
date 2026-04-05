@@ -838,7 +838,7 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\tkind\treplicas\tstatus")
+	fmt.Fprintln(writer, "  name\tkind\treplicas\trule\tstate\tstatus\thas rollback")
 	for _, deployment := range deployments {
 		printDeploymentRow(writer, deployment, "")
 	}
@@ -851,10 +851,24 @@ func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment
 	if deployment.Replicas > 0 {
 		replicas = fmt.Sprint(deployment.Replicas)
 	}
-	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Status)
+	if len(deployment.Children) > 0 {
+		fmt.Fprintf(writer, "  %s%s\t%s\t%s\t\t\t%s\t\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Status)
+		for _, child := range deployment.Children {
+			printDeploymentRow(writer, child, prefix+"\\_")
+		}
+		return
+	}
+	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
 	for _, child := range deployment.Children {
 		printDeploymentRow(writer, child, prefix+"\\_")
 	}
+}
+
+func yesOrNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return ""
 }
 
 func ListSecrets(ctx *cli.Context) error {

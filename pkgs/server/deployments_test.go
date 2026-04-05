@@ -573,6 +573,28 @@ func TestBuildDeploymentsGroupsComposeStack(t *testing.T) {
 	if stack.Children[0].Status != "healthy" && stack.Children[1].Status != "healthy" {
 		t.Fatalf("expected one healthy child in %#v", stack.Children)
 	}
+
+	var solo jigtypes.Deployment
+	for _, deployment := range deployments {
+		if deployment.Name == "solo" {
+			solo = deployment
+		}
+	}
+	if solo.Name != "solo" {
+		t.Fatalf("expected solo deployment in %#v", deployments)
+	}
+	if solo.Kind != "service" {
+		t.Fatalf("expected standalone single to render as service, got %#v", solo)
+	}
+	if solo.Rule != "Host(`solo.example.com`)" {
+		t.Fatalf("expected solo rule to be preserved, got %#v", solo)
+	}
+	if solo.Status != "healthy" {
+		t.Fatalf("expected solo to be healthy, got %#v", solo)
+	}
+	if solo.HasRollback {
+		t.Fatalf("did not expect solo to have rollback, got %#v", solo)
+	}
 }
 
 func TestBuildSwarmDeploymentsGroupsStacks(t *testing.T) {
@@ -637,6 +659,15 @@ func TestBuildSwarmDeploymentsGroupsStacks(t *testing.T) {
 	}
 	if deployments[0].Name != "api" || deployments[0].Kind != "service" {
 		t.Fatalf("expected singular service first, got %#v", deployments[0])
+	}
+	if deployments[0].Rule != "Host(`api.example.com`)" {
+		t.Fatalf("expected singular swarm rule to be preserved, got %#v", deployments[0])
+	}
+	if deployments[0].Replicas != 2 {
+		t.Fatalf("expected singular swarm replicas to be shown, got %#v", deployments[0])
+	}
+	if deployments[0].Status != "healthy" {
+		t.Fatalf("expected singular swarm service to be healthy, got %#v", deployments[0])
 	}
 	if deployments[1].Name != "stack" || deployments[1].Kind != "stack" {
 		t.Fatalf("expected stack parent, got %#v", deployments[1])
