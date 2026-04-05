@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
+	"github.com/docker/docker/api/types/swarm"
 )
 
 func compareLabels(t *testing.T, expected, actual map[string]string) {
@@ -322,5 +323,104 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 	if managed[0].Config.RestartPolicy != "unless-stopped" || managed[1].Config.RestartPolicy != "unless-stopped" {
 		t.Fatalf("expected top-level restart policy to be inherited: %#v", managed)
+	}
+}
+
+func TestMakeSwarmConstraints(t *testing.T) {
+	config := jigtypes.DeploymentConfig{
+		Placement: jigtypes.DeploymentPlacement{
+			RequiredNodeLabels: map[string]string{
+				"disk": "ssd",
+				"zone": "eu-1",
+			},
+		},
+	}
+
+	constraints, err := makeSwarmConstraints(config)
+	if err != nil {
+		t.Fatalf("makeSwarmConstraints: %v", err)
+	}
+	expected := []string{
+		"node.labels.disk == ssd",
+		"node.labels.zone == eu-1",
+	}
+	if strings.Join(constraints, "|") != strings.Join(expected, "|") {
+		t.Fatalf("expected %v, got %v", expected, constraints)
+	}
+}
+
+func TestValidateSwarmConfig(t *testing.T) {
+	t.Run("bind mounts require placement", func(t *testing.T) {
+		err := validateSwarmConfig(jigtypes.DeploymentConfig{
+			Name:    "app",
+			Volumes: []string{"/srv/data:/data"},
+		})
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+
+	t.Run("bind mounts with placement pass", func(t *testing.T) {
+		err := validateSwarmConfig(jigtypes.DeploymentConfig{
+			Name:    "app",
+			Volumes: []string{"/srv/data:/data"},
+			Placement: jigtypes.DeploymentPlacement{
+				RequiredNodeLabels: map[string]string{"disk": "ssd"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("validateSwarmConfig: %v", err)
+		}
+	})
+}
+
+func TestMakeSwarmRestartPolicy(t *testing.T) {
+	policy, err := makeSwarmRestartPolicy(jigtypes.DeploymentConfig{RestartPolicy: "on-failure:3"})
+	if err != nil {
+		t.Fatalf("makeSwarmRestartPolicy: %v", err)
+	}
+	if policy == nil {
+		t.Fatal("expected restart policy")
+	}
+	if policy.Condition != swarm.RestartPolicyConditionOnFailure {
+		t.Fatalf("expected on-failure condition, got %q", policy.Condition)
+	}
+	if policy.MaxAttempts == nil || *policy.MaxAttempts != 3 {
+		t.Fatalf("expected max attempts 3, got %#v", policy.MaxAttempts)
+	}
+}
+
+func TestMakeSwarmServiceSpec(t *testing.T) {
+	spec, err := makeSwarmServiceSpec(jigtypes.DeploymentConfig{
+		Name:          "app",
+		Port:          8080,
+		Domain:        "app.example.com",
+		RestartPolicy: "on-failure:4",
+		Volumes:       []string{"/srv/data:/data"},
+		Placement: jigtypes.DeploymentPlacement{
+			RequiredNodeLabels: map[string]string{"disk": "ssd"},
+		},
+	}, "app:swarm-1", []string{"APP_ENV=prod"})
+	if err != nil {
+		t.Fatalf("makeSwarmServiceSpec: %v", err)
+	}
+
+	if spec.TaskTemplate.ContainerSpec == nil {
+		t.Fatal("expected container spec")
+	}
+	if spec.TaskTemplate.ContainerSpec.Image != "app:swarm-1" {
+		t.Fatalf("unexpected image %q", spec.TaskTemplate.ContainerSpec.Image)
+	}
+	if got := spec.Annotations.Labels["traefik.http.routers.app.rule"]; got != "Host(`app.example.com`)" {
+		t.Fatalf("unexpected router rule %q", got)
+	}
+	if got := spec.Annotations.Labels["traefik.http.services.app.loadbalancer.server.port"]; got != "8080" {
+		t.Fatalf("unexpected load balancer port %q", got)
+	}
+	if len(spec.TaskTemplate.Placement.Constraints) != 1 || spec.TaskTemplate.Placement.Constraints[0] != "node.labels.disk == ssd" {
+		t.Fatalf("unexpected constraints %#v", spec.TaskTemplate.Placement.Constraints)
+	}
+	if spec.TaskTemplate.RestartPolicy == nil || spec.TaskTemplate.RestartPolicy.MaxAttempts == nil || *spec.TaskTemplate.RestartPolicy.MaxAttempts != 4 {
+		t.Fatalf("unexpected restart policy %#v", spec.TaskTemplate.RestartPolicy)
 	}
 }

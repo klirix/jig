@@ -16,7 +16,9 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
 	"github.com/go-chi/chi/v5"
@@ -26,7 +28,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func ensureTraefikRunning(cli *client.Client) error {
+func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
+	if backend == deploymentBackendSwarm {
+		return ensureSwarmTraefikRunning(cli)
+	}
+
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{
 		All: true,
 	})
@@ -63,14 +69,14 @@ func ensureTraefikRunning(cli *client.Client) error {
 		cli.ImagePull(context.Background(), "traefik:2.11", types.ImagePullOptions{})
 		println("Pulled traefik image, waiting for it to settle")
 		time.Sleep(4 * time.Second)
-		return ensureTraefikRunning(cli)
+		return ensureTraefikRunning(cli, backend)
 	}
 	if containerId != "" {
 		if !isRunning {
 			if err := cli.ContainerStart(context.Background(), containerId, container.StartOptions{}); err != nil {
 				println("Failed to restart contnainer, removing...", err.Error())
 				cli.ContainerRemove(context.Background(), containerId, container.RemoveOptions{})
-				return ensureTraefikRunning(cli)
+				return ensureTraefikRunning(cli, backend)
 			}
 		}
 	} else {
@@ -139,6 +145,72 @@ func ensureTraefikRunning(cli *client.Client) error {
 	return nil
 }
 
+func ensureSwarmTraefikRunning(cli *client.Client) error {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", "traefik")),
+	})
+	if err != nil {
+		return err
+	}
+	if len(services) > 0 {
+		return nil
+	}
+
+	envs := []string{}
+	commands := []string{
+		"--api.insecure=true",
+		"--log.level=DEBUG",
+		"--entrypoints.web.address=:80",
+		"--entrypoints.websecure.address=:443",
+		"--providers.docker=true",
+		"--providers.docker.exposedbydefault=false",
+		"--certificatesresolvers.defaultresolver=true",
+		"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
+		"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
+	}
+	if os.Getenv("JIG_VERCEL_APIKEY") != "" {
+		commands = append(commands,
+			"--certificatesresolvers.defaultresolver.acme.dnschallenge.provider=vercel",
+			"--certificatesresolvers.defaultresolver.acme.dnschallenge.delaybeforecheck=2")
+		envs = append(envs, "VERCEL_API_TOKEN="+os.Getenv("JIG_VERCEL_APIKEY"))
+	} else {
+		commands = append(commands,
+			"--certificatesresolvers.defaultresolver.acme.httpchallenge=true",
+			"--certificatesresolvers.defaultresolver.acme.httpchallenge.entrypoint=web")
+	}
+
+	replicas := uint64(1)
+	_, err = cli.ServiceCreate(context.Background(), swarm.ServiceSpec{
+		Annotations: swarm.Annotations{Name: "traefik"},
+		TaskTemplate: swarm.TaskSpec{
+			ContainerSpec: &swarm.ContainerSpec{
+				Image: "traefik:2.11",
+				Args:  commands,
+				Env:   envs,
+				Mounts: []mount.Mount{
+					{Type: mount.TypeBind, Source: "/var/run/docker.sock", Target: "/var/run/docker.sock"},
+					{Type: mount.TypeBind, Source: "/var/jig", Target: "/var/jig"},
+				},
+			},
+			Networks: []swarm.NetworkAttachmentConfig{{Target: "jig"}},
+			RestartPolicy: &swarm.RestartPolicy{
+				Condition: swarm.RestartPolicyConditionAny,
+			},
+		},
+		Mode: swarm.ServiceMode{
+			Replicated: &swarm.ReplicatedService{Replicas: &replicas},
+		},
+		EndpointSpec: &swarm.EndpointSpec{
+			Ports: []swarm.PortConfig{
+				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 80, PublishedPort: 80, PublishMode: swarm.PortConfigPublishModeIngress},
+				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 443, PublishedPort: 443, PublishMode: swarm.PortConfigPublishModeIngress},
+				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 8080, PublishedPort: 8080, PublishMode: swarm.PortConfigPublishModeIngress},
+			},
+		},
+	}, types.ServiceCreateOptions{})
+	return err
+}
+
 const defaultSecretsDbPath = "./secrets.db"
 
 func createOrOpenDb(pathToDb string) (*sql.DB, error) {
@@ -192,7 +264,7 @@ func main() {
 // 	return record.Token, nil
 // }
 
-func ensureNetworkIsUp(cli *client.Client) error {
+func ensureNetworkIsUp(cli *client.Client, backend deploymentBackend) error {
 	networks, err := cli.NetworkList(context.Background(), types.NetworkListOptions{
 		Filters: filters.NewArgs(filters.KeyValuePair{Key: "name", Value: "jig"}),
 	})
@@ -204,12 +276,31 @@ func ensureNetworkIsUp(cli *client.Client) error {
 			return nil
 		}
 	}
+	createOptions := types.NetworkCreate{Driver: "bridge"}
+	if backend == deploymentBackendSwarm {
+		createOptions = types.NetworkCreate{
+			Driver:     "overlay",
+			Attachable: true,
+			Scope:      "swarm",
+		}
+	}
 	log.Print("Network jig doesn't exist, creating network")
-	_, err = cli.NetworkCreate(context.Background(), "jig", types.NetworkCreate{Driver: "bridge"})
+	_, err = cli.NetworkCreate(context.Background(), "jig", createOptions)
 	if err != nil {
 		return nil
 	}
 	return nil
+}
+
+func detectDeploymentBackend(cli *client.Client) (deploymentBackend, error) {
+	info, err := cli.Info(context.Background())
+	if err != nil {
+		return deploymentBackendContainers, err
+	}
+	if info.Swarm.ControlAvailable && info.Swarm.LocalNodeState == swarm.LocalNodeStateActive {
+		return deploymentBackendSwarm, nil
+	}
+	return deploymentBackendContainers, nil
 }
 
 var tokens *tokenStorage
@@ -218,6 +309,7 @@ type AppRouter struct {
 	cli         *client.Client
 	secretStore *Secrets
 	tokenStore  *tokenStorage
+	backend     deploymentBackend
 }
 
 func (a *AppRouter) mainRouter() chi.Router {
@@ -228,7 +320,7 @@ func (a *AppRouter) mainRouter() chi.Router {
 
 	r.With(a.ensureAuth).Mount("/secrets", SecretRouter{a.secretStore}.Router())
 
-	r.With(a.ensureAuth).Mount("/deployments", DeploymentsRouter{a.cli, a.secretStore}.Router())
+	r.With(a.ensureAuth).Mount("/deployments", DeploymentsRouter{cli: a.cli, secret_db: a.secretStore, backend: a.backend}.Router())
 
 	r.With(a.ensureAuth).Mount("/tokens", TokenRouter{a.tokenStore}.Router())
 
@@ -298,13 +390,20 @@ func serve() {
 	}
 	log.Println("Connected to docker daemon")
 
-	if err := ensureNetworkIsUp(cli); err != nil {
-		log.Println("Failed to ensure bridge network is running")
+	backend, err := detectDeploymentBackend(cli)
+	if err != nil {
+		log.Println("Failed to detect deployment backend")
 		panic(err)
 	}
-	log.Println("Bridge network up!")
+	log.Printf("Using %s deployment backend", backend)
 
-	if err := ensureTraefikRunning(cli); err != nil {
+	if err := ensureNetworkIsUp(cli, backend); err != nil {
+		log.Println("Failed to ensure deployment network is running")
+		panic(err)
+	}
+	log.Println("Deployment network up!")
+
+	if err := ensureTraefikRunning(cli, backend); err != nil {
 		log.Println("Failed to ensure traefik is running")
 		panic(err)
 	}
@@ -334,6 +433,7 @@ func serve() {
 		cli:         cli,
 		secretStore: secretStore,
 		tokenStore:  tokens,
+		backend:     backend,
 	}
 
 	router := app.mainRouter()

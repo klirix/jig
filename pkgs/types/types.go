@@ -9,10 +9,15 @@ type DeploymentConfig struct {
 	Rule           string               `json:"rule" yaml:"rule"`
 	ComposeFile    string               `json:"composeFile" yaml:"composeFile"`
 	ComposeService string               `json:"composeService" yaml:"composeService"`
+	Placement      DeploymentPlacement  `json:"placement" yaml:"placement"`
 	Envs           map[string]string    `json:"envs" yaml:"envs"`
 	ExposePorts    map[string]string    `json:"exposePorts" yaml:"exposePorts"`
 	Volumes        []string             `json:"volumes" yaml:"volumes"`
 	Middlewares    DeploymentMiddleares `json:"middlewares" yaml:"middlewares"`
+}
+
+type DeploymentPlacement struct {
+	RequiredNodeLabels map[string]string `json:"requiredNodeLabels" yaml:"requiredNodeLabels"`
 }
 
 type DeploymentMiddleares struct {
