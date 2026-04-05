@@ -739,6 +739,30 @@ func (d *DeploymentsRouter) usesSwarm() bool {
 	return d.backend == deploymentBackendSwarm
 }
 
+func isRollbackContainer(name string, container types.Container) bool {
+	rollbackName := "/" + name + "-prev"
+	for _, containerName := range container.Names {
+		if containerName == rollbackName {
+			return true
+		}
+	}
+	return false
+}
+
+func deploymentRepresentativeScore(name string, container types.Container) int {
+	score := 0
+	if !isRollbackContainer(name, container) {
+		score += 4
+	}
+	if container.Labels["jig.primary"] == "true" {
+		score += 2
+	}
+	if container.State == "running" {
+		score++
+	}
+	return score
+}
+
 func listContainerDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
 	if err != nil {
@@ -753,16 +777,16 @@ func listContainerDeployments(cli *client.Client) ([]jigtypes.Deployment, error)
 		if !isJigDeployment {
 			continue
 		}
-		if len(container.Names) > 0 && ("/"+container.Labels["jig.name"]+"-prev") == container.Names[0] {
+		if isRollbackContainer(name, container) {
 			deploymentHasRollback[name] = true
 		}
-		if current, exists := representativeContainers[name]; !exists || container.Labels["jig.primary"] == "true" || current.Labels["jig.primary"] != "true" {
+		if current, exists := representativeContainers[name]; !exists || deploymentRepresentativeScore(name, container) > deploymentRepresentativeScore(name, current) {
 			representativeContainers[name] = container
 		}
 	}
 
 	for name, container := range representativeContainers {
-		if len(container.Names) > 0 && ("/"+name+"-prev") == container.Names[0] {
+		if isRollbackContainer(name, container) {
 			continue
 		}
 		deployments = append(deployments, jigtypes.Deployment{

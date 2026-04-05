@@ -1,97 +1,123 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "JigDeployment",
+  "title": "Jig deployment config",
   "type": "object",
   "required": [
     "name"
   ],
+  "additionalProperties": false,
   "properties": {
     "name": {
-      "description": "The unique deployment name",
-      "type": "string"
+      "description": "The unique deployment name.",
+      "type": "string",
+      "minLength": 1
     },
     "port": {
-      "description": "The port to expose the service on",
-      "type": "integer"
+      "description": "The container port to expose for single-container deployments.",
+      "type": "integer",
+      "minimum": 1
     },
     "exposePorts": {
-      "description": "Ports to expose from the service in format 1234/udp => 1234",
+      "description": "Additional host port bindings for single-container deployments in the format \"containerPort/protocol\": \"hostPort\".",
       "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[0-9]+\\/(tcp|udp)$"
+      },
       "additionalProperties": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^[0-9]+$"
       }
     },
     "volumes": {
-      "description": "Volumes to mount to the service",
+      "description": "Bind mounts for single-container deployments in the format \"/host/path:/container/path\".",
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^.+:.+$"
       }
     },
     "restartPolicy": {
-      "description": "The restart policy for the service",
+      "description": "Docker restart policy such as \"unless-stopped\" or \"on-failure:2\".",
       "type": "string"
     },
     "domain": {
-      "description": "Domain the service is hosted on",
+      "description": "Domain name routed to the deployment when no explicit Traefik rule is provided.",
       "type": "string"
     },
     "hostname": {
-      "description": "Intername hostname of the service",
+      "description": "Internal hostname alias used on the Jig Docker network.",
       "type": "string"
     },
     "rule": {
-      "description": "Traefik rule to use for the service intead of just the domain\n\nExample: \"Host(`example.com`) && PathPrefix(`/api`)\"",
+      "description": "Explicit Traefik rule to use instead of deriving one from domain. Example: \"Host(`example.com`) && PathPrefix(`/api`)\".",
+      "type": "string"
+    },
+    "composeFile": {
+      "description": "Compose file to deploy. When set, Jig deploys the project with docker compose.",
+      "type": "string"
+    },
+    "composeService": {
+      "description": "Primary routed service in legacy compose mode. Ignored for per-service x-jig deployments.",
       "type": "string"
     },
     "envs": {
-      "description": "Map of environment variables to set for the service, secret values start with @",
+      "description": "Map of environment variables to set for the deployment. Secret values start with @.",
       "type": "object",
       "additionalProperties": {
         "type": "string"
       }
     },
     "middlewares": {
-      "description": "Middlewares to use for the service",
+      "description": "Traefik middleware configuration for the deployment.",
       "type": "object",
+      "additionalProperties": false,
       "properties": {
         "noTLS": {
-          "description": "Disable TLS for the service",
+          "description": "Disable the HTTPS router for the deployment.",
           "type": "boolean"
         },
         "noHTTP": {
-          "description": "Disable HTTP for the service",
+          "description": "Disable HTTP routing entirely. When true, the deployment becomes internal-only.",
           "type": "boolean"
         },
         "rateLimiting": {
-          "description": "Limit the rate of requests to the service",
+          "description": "Limit request rate for the deployment.",
           "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "average",
+            "burst"
+          ],
           "properties": {
             "average": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0
             },
             "burst": {
-              "type": "integer"
+              "type": "integer",
+              "minimum": 0
             }
           }
         },
         "stripPrefix": {
-          "description": "Strip prefixes from the request path",
+          "description": "Strip prefixes from the request path.",
           "type": "array",
           "items": {
             "type": "string"
           }
         },
         "addPrefix": {
-          "description": "Add a prefix to the request path",
+          "description": "Add a prefix to the request path.",
           "type": "string"
         },
         "compression": {
-          "description": "Gzip compress the response",
+          "description": "Enable response compression.",
           "type": "boolean"
         },
         "basicAuth": {
-          "description": "Basic auth",
+          "description": "Basic auth credentials in Traefik users format.",
           "type": "array",
           "items": {
             "type": "string"
@@ -99,5 +125,36 @@
         }
       }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "composeFile"
+        ]
+      },
+      "then": {
+        "description": "Compose mode only supports a subset of top-level jig.json fields.",
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "port"
+              ]
+            },
+            {
+              "required": [
+                "exposePorts"
+              ]
+            },
+            {
+              "required": [
+                "volumes"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
 }
