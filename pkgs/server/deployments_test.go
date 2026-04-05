@@ -342,6 +342,60 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 }
 
+func TestMakeSwarmStackOverride(t *testing.T) {
+	override, err := makeSwarmStackOverride([]composeManagedService{
+		{
+			StackName:   "stack",
+			ServiceName: "web",
+			DisplayName: "frontend",
+			Config: jigtypes.DeploymentConfig{
+				Name:          "stack-frontend",
+				Hostname:      "frontend",
+				ComposeFile:   "docker-compose.yaml",
+				RestartPolicy: "on-failure:3",
+				Domain:        "app.example.com",
+				Placement: jigtypes.DeploymentPlacement{
+					RequiredNodeLabels: map[string]string{"disk": "ssd"},
+				},
+			},
+			Envs: map[string]string{
+				"API_TOKEN": "secret",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("makeSwarmStackOverride: %v", err)
+	}
+
+	expectedSnippets := []string{
+		`services:`,
+		`web:`,
+		`hostname: frontend`,
+		`API_TOKEN: secret`,
+		`networks:`,
+		`aliases:`,
+		`- frontend`,
+		`restart_policy:`,
+		`condition: on-failure`,
+		`max_attempts: 3`,
+		`constraints:`,
+		`- node.labels.disk == ssd`,
+		`jig.deployment-kind: swarm-stack-service`,
+		`jig.stack: stack`,
+		`jig.service: frontend`,
+		"traefik.http.routers.stack-frontend-secure.rule: Host(`app.example.com`)",
+		`networks:`,
+		`jig:`,
+		`external: true`,
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(override, snippet) {
+			t.Fatalf("expected override to contain %q, got:\n%s", snippet, override)
+		}
+	}
+}
+
 func TestMakeSwarmConstraints(t *testing.T) {
 	config := jigtypes.DeploymentConfig{
 		Placement: jigtypes.DeploymentPlacement{
@@ -501,17 +555,105 @@ func TestBuildDeploymentsGroupsComposeStack(t *testing.T) {
 	if stack.Name != "stack" {
 		t.Fatalf("expected stack deployment in %#v", deployments)
 	}
+	if stack.Kind != "stack" {
+		t.Fatalf("expected generic stack kind, got %#v", stack)
+	}
 	if stack.Status != "unhealthy" {
 		t.Fatalf("expected stack health to reflect the worst child, got %#v", stack)
 	}
 	if len(stack.Children) != 2 {
 		t.Fatalf("expected two child services, got %#v", stack.Children)
 	}
+	if stack.Children[0].Kind != "stack-service" || stack.Children[1].Kind != "stack-service" {
+		t.Fatalf("expected generic stack-service kinds in %#v", stack.Children)
+	}
 	if stack.Children[0].Name != "api" && stack.Children[1].Name != "api" {
 		t.Fatalf("expected api child in %#v", stack.Children)
 	}
 	if stack.Children[0].Status != "healthy" && stack.Children[1].Status != "healthy" {
 		t.Fatalf("expected one healthy child in %#v", stack.Children)
+	}
+}
+
+func TestBuildSwarmDeploymentsGroupsStacks(t *testing.T) {
+	replicas := uint64(2)
+	services := []swarm.Service{
+		{
+			ID: "svc-single",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":                      "api",
+						"jig.deployment-kind":           "swarm",
+						"traefik.http.routers.api.rule": "Host(`api.example.com`)",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: &replicas},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 2, DesiredTasks: 2},
+		},
+		{
+			ID: "svc-stack-web",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":                            "stack-web",
+						"jig.deployment-kind":                 "swarm-stack-service",
+						"jig.stack":                           "stack",
+						"jig.service":                         "web",
+						"traefik.http.routers.stack-web.rule": "Host(`app.example.com`)",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: ptr(uint64(1))},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 1, DesiredTasks: 1},
+		},
+		{
+			ID: "svc-stack-worker",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":            "stack-worker",
+						"jig.deployment-kind": "swarm-stack-service",
+						"jig.stack":           "stack",
+						"jig.service":         "worker",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: ptr(uint64(1))},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 0, DesiredTasks: 1},
+		},
+	}
+
+	deployments := buildSwarmDeployments(services)
+	if len(deployments) != 2 {
+		t.Fatalf("expected 2 top-level deployments, got %#v", deployments)
+	}
+	if deployments[0].Name != "api" || deployments[0].Kind != "service" {
+		t.Fatalf("expected singular service first, got %#v", deployments[0])
+	}
+	if deployments[1].Name != "stack" || deployments[1].Kind != "stack" {
+		t.Fatalf("expected stack parent, got %#v", deployments[1])
+	}
+	if deployments[1].Status != "unhealthy" {
+		t.Fatalf("expected unhealthy stack when one child is down, got %#v", deployments[1])
+	}
+	if len(deployments[1].Children) != 2 {
+		t.Fatalf("expected 2 stack children, got %#v", deployments[1].Children)
+	}
+	for _, child := range deployments[1].Children {
+		if child.Kind != "stack-service" {
+			t.Fatalf("expected stack-service kind, got %#v", child)
+		}
+		if child.ParentName != "stack" {
+			t.Fatalf("expected parent name stack, got %#v", child)
+		}
 	}
 }
 

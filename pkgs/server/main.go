@@ -164,8 +164,10 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 		"--log.level=DEBUG",
 		"--entrypoints.web.address=:80",
 		"--entrypoints.websecure.address=:443",
-		"--providers.docker=true",
-		"--providers.docker.exposedbydefault=false",
+		"--providers.swarm=true",
+		"--providers.swarm.endpoint=unix:///var/run/docker.sock",
+		"--providers.swarm.exposedbydefault=false",
+		"--providers.swarm.network=jig",
 		"--certificatesresolvers.defaultresolver=true",
 		"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
 		"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
@@ -326,6 +328,8 @@ func (a *AppRouter) mainRouter() chi.Router {
 	r.With(a.ensureAuth).Mount("/secrets", SecretRouter{a.secretStore}.Router())
 
 	r.With(a.ensureAuth).Mount("/deployments", DeploymentsRouter{cli: a.cli, secret_db: a.secretStore, backend: a.backend}.Router())
+
+	r.With(a.ensureAuth).Mount("/cluster", ClusterRouter{cli: a.cli, backend: a.backend}.Router())
 
 	r.With(a.ensureAuth).Mount("/tokens", TokenRouter{a.tokenStore}.Router())
 

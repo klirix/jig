@@ -82,6 +82,17 @@ func makeRule(config jigtypes.DeploymentConfig) string {
 	}
 }
 
+func deploymentRuleFromLabels(labels map[string]string) string {
+	name := labels["jig.name"]
+	if name == "" {
+		return ""
+	}
+	if rule := labels["traefik.http.routers."+name+`.rule`]; rule != "" {
+		return rule
+	}
+	return labels["traefik.http.routers."+name+`-secure.rule`]
+}
+
 type deploymentBackend string
 
 const (
@@ -1014,7 +1025,7 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 			for _, childName := range childNames {
 				childGroup := stackGroup.services[childName]
 				child := deploymentFromContainer(childGroup.container, childName, false)
-				child.Kind = "compose-service"
+				child.Kind = "stack-service"
 				child.ParentName = stackGroup.stackName
 				children = append(children, child)
 				if child.Status != "healthy" {
@@ -1024,7 +1035,7 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 
 			parent := jigtypes.Deployment{
 				Name:     stackGroup.stackName,
-				Kind:     "compose",
+				Kind:     "stack",
 				Status:   "healthy",
 				Children: children,
 			}
@@ -1050,30 +1061,26 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 	return deployments
 }
 
-func swarmDeploymentHealth(status string) string {
-	if strings.Contains(status, "1/1 running") || strings.Contains(status, "running") {
-		return "healthy"
+func swarmDeploymentHealth(service swarm.Service) string {
+	if service.ServiceStatus != nil {
+		if service.ServiceStatus.DesiredTasks > 0 && service.ServiceStatus.RunningTasks == service.ServiceStatus.DesiredTasks {
+			return "healthy"
+		}
+		return "unhealthy"
 	}
-	if status == "running" {
-		return "healthy"
-	}
-	return "unhealthy"
+	return "healthy"
 }
 
 func swarmDeploymentFromService(service swarm.Service, name string) jigtypes.Deployment {
-	status := "unknown"
 	lifetime := service.CreatedAt.Format("2006-01-02 15:04:05")
 	if service.UpdateStatus != nil && service.UpdateStatus.Message != "" {
 		lifetime = service.UpdateStatus.Message
 	}
-	if service.ServiceStatus != nil {
-		status = fmt.Sprintf("%d/%d running", service.ServiceStatus.RunningTasks, service.ServiceStatus.DesiredTasks)
-	}
 	return jigtypes.Deployment{
 		ID:          service.ID,
 		Name:        name,
-		Rule:        service.Spec.Labels["traefik.http.routers."+service.Spec.Labels["jig.name"]+`.rule`],
-		Status:      swarmDeploymentHealth(status),
+		Rule:        deploymentRuleFromLabels(service.Spec.Labels),
+		Status:      swarmDeploymentHealth(service),
 		Lifetime:    lifetime,
 		HasRollback: service.PreviousSpec != nil,
 		Replicas:    swarmServiceDesiredReplicas(service),
@@ -1085,7 +1092,7 @@ func deploymentFromContainer(container types.Container, name string, hasRollback
 		ID:          container.ID,
 		Name:        name,
 		Kind:        "service",
-		Rule:        container.Labels["traefik.http.routers."+container.Labels["jig.name"]+`.rule`],
+		Rule:        deploymentRuleFromLabels(container.Labels),
 		Status:      deploymentHealth(container.State),
 		Lifetime:    container.Status,
 		HasRollback: hasRollback,
@@ -1196,12 +1203,7 @@ func listContainerDeployments(cli *client.Client) ([]jigtypes.Deployment, error)
 	return buildDeployments(containers), nil
 }
 
-func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
-	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
-	if err != nil {
-		return nil, err
-	}
-
+func buildSwarmDeployments(services []swarm.Service) []jigtypes.Deployment {
 	singles := make([]jigtypes.Deployment, 0, len(services))
 	stacks := map[string]*swarmServiceGroup{}
 	for _, service := range services {
@@ -1212,7 +1214,7 @@ func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 		switch service.Spec.Labels["jig.deployment-kind"] {
 		case "swarm":
 			deployment := swarmDeploymentFromService(service, name)
-			deployment.Kind = "swarm-service"
+			deployment.Kind = "service"
 			singles = append(singles, deployment)
 		case "swarm-stack-service":
 			stackName := service.Spec.Labels["jig.stack"]
@@ -1255,7 +1257,7 @@ func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 		for _, serviceName := range serviceNames {
 			service := group.services[serviceName]
 			child := swarmDeploymentFromService(service, serviceName)
-			child.Kind = "swarm-stack-service"
+			child.Kind = "stack-service"
 			child.ParentName = stackName
 			children = append(children, child)
 			if child.Status != "healthy" {
@@ -1264,7 +1266,7 @@ func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 		}
 		parent := jigtypes.Deployment{
 			Name:     stackName,
-			Kind:     "swarm-stack",
+			Kind:     "stack",
 			Status:   "healthy",
 			Children: children,
 		}
@@ -1278,7 +1280,18 @@ func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 		}
 		deployments = append(deployments, parent)
 	}
-	return deployments, nil
+	slices.SortFunc(deployments, func(a, b jigtypes.Deployment) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return deployments
+}
+
+func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return buildSwarmDeployments(services), nil
 }
 
 func swarmServiceDesiredReplicas(service swarm.Service) int {
@@ -1524,6 +1537,9 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 		}
 		deployments = append(deployments, swarmDeployments...)
 	}
+	slices.SortFunc(deployments, func(a, b jigtypes.Deployment) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	deploymentsJson, err := json.Marshal(deployments)
 	if err != nil {

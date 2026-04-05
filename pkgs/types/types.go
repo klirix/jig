@@ -90,6 +90,18 @@ type DeploymentScaleRequest struct {
 	Replicas int `json:"replicas"`
 }
 
+type ClusterStatusResponse struct {
+	Backend        string           `json:"backend"`
+	Nodes          []SwarmNodeStats `json:"nodes,omitempty"`
+	ManagerAddress string           `json:"managerAddress,omitempty"`
+}
+
+type ClusterJoinTokenResponse struct {
+	Role    string `json:"role"`
+	Token   string `json:"token"`
+	Command string `json:"command"`
+}
+
 type TokenListResponse struct {
 	TokenNames []string `json:"tokens"`
 }

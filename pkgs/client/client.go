@@ -674,6 +674,99 @@ func main() {
 				},
 			},
 			{
+				Name: "cluster",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "status",
+						Usage: "Show cluster status",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							req, _ := createRequest("GET", "/cluster/status")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting cluster status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var status jigtypes.ClusterStatusResponse
+							if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Printf("backend: %s\n", status.Backend)
+							if status.ManagerAddress != "" {
+								fmt.Printf("manager: %s\n", status.ManagerAddress)
+							}
+							if len(status.Nodes) == 0 {
+								return nil
+							}
+
+							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
+							fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
+							for _, node := range status.Nodes {
+								fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+									node.Name,
+									node.Role,
+									node.Availability,
+									node.State,
+									node.Cpus,
+									float64(node.MemoryBytes)/(1024*1024*1024),
+									node.RunningTasks,
+									node.TotalTasks,
+								)
+							}
+							writer.Flush()
+							return nil
+						},
+					},
+					{
+						Name:  "join-token",
+						Usage: "Get a swarm join token and command",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args:      true,
+						ArgsUsage: " worker|manager",
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							role := ctx.Args().First()
+							if role == "" {
+								log.Fatal("Role is required")
+							}
+							req, _ := createRequest("GET", "/cluster/join-token/"+role)
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting join token: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var joinToken jigtypes.ClusterJoinTokenResponse
+							if err := json.NewDecoder(resp.Body).Decode(&joinToken); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Println(joinToken.Command)
+							return nil
+						},
+					},
+				},
+			},
+			{
 				Name: "secrets",
 				Subcommands: []*cli.Command{
 					{

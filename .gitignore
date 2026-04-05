@@ -2,3 +2,4 @@ __debug_bin*
 .envrc
 *.db
 bin/*
+.codex
