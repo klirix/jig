@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -450,6 +454,85 @@ func TestMakeSwarmBuildOverride(t *testing.T) {
 	}
 	if strings.Contains(override, "ghcr.io/example/api:latest") {
 		t.Fatalf("did not expect non-build image to be overridden, got:\n%s", override)
+	}
+}
+
+func TestWriteSanitizedSwarmComposeFile(t *testing.T) {
+	tempDir := t.TempDir()
+	composePath := filepath.Join(tempDir, "docker-compose.yaml")
+	input := []byte(`
+services:
+  api:
+    build: .
+    image: example/api:latest
+    x-jig:
+      name: api
+  worker:
+    image: example/worker:latest
+`)
+	if err := os.WriteFile(composePath, input, 0644); err != nil {
+		t.Fatalf("write compose file: %v", err)
+	}
+
+	sanitizedFile, err := writeSanitizedSwarmComposeFile(tempDir, "docker-compose.yaml")
+	if err != nil {
+		t.Fatalf("writeSanitizedSwarmComposeFile: %v", err)
+	}
+
+	output, err := os.ReadFile(filepath.Join(tempDir, sanitizedFile))
+	if err != nil {
+		t.Fatalf("read sanitized file: %v", err)
+	}
+	if strings.Contains(string(output), "build:") {
+		t.Fatalf("expected build stanza to be removed, got:\n%s", output)
+	}
+	if strings.Contains(string(output), "x-jig:") {
+		t.Fatalf("expected x-jig stanza to be removed, got:\n%s", output)
+	}
+	if !strings.Contains(string(output), "image: example/api:latest") {
+		t.Fatalf("expected image to be preserved, got:\n%s", output)
+	}
+}
+
+func TestMakeDeployOutputFilter(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	filter := makeDeployOutputFilter(recorder, "ringge-kit", false)
+
+	filter("Ignoring unsupported options: build")
+	filter("Since --detach=false was not specified, tasks will be created in the background.")
+	filter("In a future release, --detach=false will become the default.")
+	filter("Updating service ringge-kit_api (id: 123)")
+	filter("Creating service ringge-kit_frontend (id: 456)")
+	filter("unrelated noise")
+
+	output := recorder.Body.String()
+	if strings.Contains(output, "Ignoring unsupported options") {
+		t.Fatalf("expected unsupported options warning to be filtered, got:\n%s", output)
+	}
+	if strings.Contains(output, "detach=false") {
+		t.Fatalf("expected detach warning to be filtered, got:\n%s", output)
+	}
+	for _, expected := range []string{"Updating api", "Creating frontend"} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
+		}
+	}
+}
+
+func TestCopyDockerLogStreamDemuxesHeaders(t *testing.T) {
+	stream := []byte{
+		1, 0, 0, 0, 0, 0, 0, 5,
+		'h', 'e', 'l', 'l', 'o',
+		2, 0, 0, 0, 0, 0, 0, 5,
+		'w', 'o', 'r', 'l', 'd',
+	}
+
+	var output bytes.Buffer
+	if err := copyDockerLogStream(&output, bytes.NewReader(stream)); err != nil {
+		t.Fatalf("copyDockerLogStream: %v", err)
+	}
+	if output.String() != "helloworld" {
+		t.Fatalf("expected demuxed output, got %q", output.String())
 	}
 }
 

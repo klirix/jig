@@ -24,6 +24,7 @@ import (
 )
 
 var config, _ = client_config.InitConfig()
+var ui = newCLIOutput()
 
 var httpClient = &http.Client{}
 
@@ -186,7 +187,9 @@ func loginCommand(c *cli.Context) error {
 		}
 	}
 	req, _ := createRequest("GET", "/deployments")
+	loading := ui.startLoading("Connecting to server")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		log.Fatal("Error making request: ", err)
 	}
@@ -195,7 +198,7 @@ func loginCommand(c *cli.Context) error {
 	}
 	config.AddServer(config.Endpoint, config.Token)
 	config.Persist()
-	println("Successfully logged in ✨")
+	ui.success("Logged in")
 	return nil
 }
 
@@ -229,7 +232,7 @@ func main() {
 						log.Fatal("Error writing jig.json: ", err)
 					}
 					os.WriteFile("./.jigignore", []byte(`# This is a list of files to ignore when deploying`), 0644)
-					println("Successfully created a jig.json  ✨")
+					ui.success("Created jig.json")
 					return nil
 				},
 			},
@@ -271,6 +274,14 @@ func main() {
 					tokenFlag,
 				},
 				Action: deployCommand,
+			},
+			{
+				Name:      "logs",
+				Usage:     "Get logs for a deployment or stack:service",
+				Args:      true,
+				ArgsUsage: " name|stack:service",
+				Flags:     []cli.Flag{tokenFlag},
+				Action:    logsCommand,
 			},
 			{
 				Name: "deployments",
@@ -332,7 +343,9 @@ func main() {
 								log.Fatal("Name is required")
 							}
 							req, _ := createRequest("DELETE", "/deployments/"+name)
+							loading := ui.startLoading("Removing deployment")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -340,7 +353,7 @@ func main() {
 							if resp.StatusCode != 204 {
 								log.Fatal("Error deleting deployment: ", resp.Status)
 							} else {
-								println("Successfully removed a deployment ❌")
+								ui.success("Removed deployment " + name)
 							}
 							return nil
 						},
@@ -368,7 +381,9 @@ func main() {
 								log.Fatal("Name is required")
 							}
 							req, _ := createRequest("POST", "/deployments/"+name+"/rollback")
+							loading := ui.startLoading("Rolling back deployment")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -376,7 +391,7 @@ func main() {
 							if resp.StatusCode != 200 {
 								log.Fatal("Error rolling back a deployment: ", resp.Status)
 							} else {
-								println("Successfully rollbacked a deployment 🔃")
+								ui.success("Rolled back deployment " + name)
 							}
 							return nil
 						},
@@ -389,32 +404,7 @@ func main() {
 							tokenFlag,
 						},
 						ArgsUsage: " name|stack:service",
-						Action: func(ctx *cli.Context) error {
-							if ctx.String("token") != "" {
-								config.UseTempToken(ctx.String("token"))
-							}
-							name := ctx.Args().First()
-							if name == "" {
-								log.Fatal("Name is required")
-							}
-							req, _ := createRequest("GET", "/deployments/"+name+"/logs")
-							resp, err := httpClient.Do(req)
-							if err != nil {
-								log.Fatal("Error making request: ", err)
-							}
-
-							if resp.StatusCode != 200 {
-								log.Fatal("Error getting logs: ", resp.Status)
-							}
-
-							body, err := io.ReadAll(resp.Body)
-							if err != nil {
-								log.Fatal("Error reading request: ", err)
-							}
-							println(string(body))
-
-							return nil
-						},
+						Action:    logsCommand,
 					},
 					{
 						Name:  "scale",
@@ -444,7 +434,9 @@ func main() {
 							req, _ := createRequest("POST", "/deployments/"+name+"/scale")
 							req.Header.Set("Content-Type", "application/json")
 							req.Body = io.NopCloser(bytes.NewReader(requestBody))
+							loading := ui.startLoading("Scaling deployment")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -453,7 +445,7 @@ func main() {
 								body, _ := io.ReadAll(resp.Body)
 								log.Fatalf("Error scaling deployment: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 							}
-							fmt.Printf("Scaled %s to %d replicas\n", name, replicas)
+							ui.success(fmt.Sprintf("Scaled %s to %d replicas", name, replicas))
 							return nil
 						},
 					},
@@ -468,7 +460,9 @@ func main() {
 								config.UseTempToken(ctx.String("token"))
 							}
 							req, _ := createRequest("GET", "/deployments/stats")
+							loading := ui.startLoading("Loading deployment stats")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -486,28 +480,29 @@ func main() {
 								log.Fatal("Error unmarshalling response: ", err)
 							}
 
-							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
+							ui.section("Deployment Stats", "Live resource usage")
 							if statsResponse.Mode == "swarm" {
-								fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
-								for _, node := range statsResponse.Nodes {
-									fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
-										node.Name,
-										node.Role,
-										node.Availability,
-										node.State,
-										node.Cpus,
-										float64(node.MemoryBytes)/(1024*1024*1024),
-										node.RunningTasks,
-										node.TotalTasks,
-									)
-								}
+								ui.table([]string{"node", "role", "availability", "state", "cpus", "memory", "running", "total"}, func(writer *tabwriter.Writer) {
+									for _, node := range statsResponse.Nodes {
+										fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+											node.Name,
+											node.Role,
+											node.Availability,
+											node.State,
+											node.Cpus,
+											float64(node.MemoryBytes)/(1024*1024*1024),
+											node.RunningTasks,
+											node.TotalTasks,
+										)
+									}
+								})
 							} else {
-								fmt.Fprintln(writer, "name\tmemory\tcpu")
-								for _, stat := range statsResponse.Stats {
-									fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%% \n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
-								}
+								ui.table([]string{"name", "memory", "cpu"}, func(writer *tabwriter.Writer) {
+									for _, stat := range statsResponse.Stats {
+										fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%%\n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
+									}
+								})
 							}
-							writer.Flush()
 							return nil
 						},
 					},
@@ -528,7 +523,9 @@ func main() {
 							}
 
 							req, _ := createRequest("GET", "/tokens")
+							loading := ui.startLoading("Loading tokens")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -544,17 +541,16 @@ func main() {
 								log.Fatal("Error unmarshalling response: ", err)
 							}
 
-							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
-							fmt.Fprintln(os.Stdout, []any{"> Tokens:\n"}...)
-							if len(tokens.TokenNames) > 0 {
-								fmt.Fprintln(writer, "  name")
-							} else {
-								fmt.Fprintln(writer, "  No tokens set yet 🤫")
+							ui.section("Tokens", fmt.Sprintf("%d configured", len(tokens.TokenNames)))
+							if len(tokens.TokenNames) == 0 {
+								ui.warning("No tokens configured")
+								return nil
 							}
-							for _, token := range tokens.TokenNames {
-								fmt.Fprintf(writer, "  %s\n", token)
-							}
-							writer.Flush()
+							ui.table([]string{"name"}, func(writer *tabwriter.Writer) {
+								for _, token := range tokens.TokenNames {
+									fmt.Fprintf(writer, "%s\n", token)
+								}
+							})
 							return nil
 						},
 					},
@@ -574,7 +570,9 @@ func main() {
 							bodyBytes, _ := json.Marshal(bodyToSend)
 
 							req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+							loading := ui.startLoading("Creating token")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -587,9 +585,9 @@ func main() {
 								log.Fatal("Error reading response: ", err)
 							}
 
-							println("Successfully created a token, keep it safe: ✨")
-							println("Name:", tokenCreateResponse.Name)
-							println("Token:", config.SelectedServer+"+"+tokenCreateResponse.Token)
+							ui.section("Token Created", "Store this value now; it will not be shown again")
+							ui.line("name", tokenCreateResponse.Name)
+							ui.line("token", config.SelectedServer+"+"+tokenCreateResponse.Token)
 							return nil
 						},
 					},
@@ -609,7 +607,9 @@ func main() {
 								log.Fatal("Name is required")
 							}
 							req, _ := createRequest("DELETE", "/tokens/"+name)
+							loading := ui.startLoading("Removing token")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -617,7 +617,7 @@ func main() {
 							if resp.StatusCode != 204 {
 								log.Fatal("Error deleting token: ", resp.Status)
 							} else {
-								println("Successfully removed a token ❌")
+								ui.success("Removed token " + name)
 							}
 							return nil
 						},
@@ -631,10 +631,21 @@ func main() {
 						Name:  "ls",
 						Usage: "List servers",
 						Action: func(ctx *cli.Context) error {
-							println("Available servers:")
-							for server := range config.Servers {
-								println(server)
+							servers := sortedServers(config.Servers)
+							ui.section("Servers", fmt.Sprintf("%d configured", len(servers)))
+							if len(servers) == 0 {
+								ui.warning("No servers configured")
+								return nil
 							}
+							ui.table([]string{"server", "selected"}, func(writer *tabwriter.Writer) {
+								for _, server := range servers {
+									selected := ""
+									if config.SelectedServer == server {
+										selected = ui.cyan("current")
+									}
+									fmt.Fprintf(writer, "%s\t%s\n", server, selected)
+								}
+							})
 							return nil
 						},
 					},
@@ -648,7 +659,7 @@ func main() {
 							if err != nil {
 								log.Fatal("Error selecting server: ", err)
 							}
-							println("Successfully selected server: ", server)
+							ui.success("Selected server " + server)
 							return nil
 						},
 					},
@@ -667,7 +678,7 @@ func main() {
 								config.Token = ""
 							}
 							config.Persist()
-							println("Successfully removed server: ", server)
+							ui.success("Removed server " + server)
 							return nil
 						},
 					},
@@ -687,7 +698,9 @@ func main() {
 								config.UseTempToken(ctx.String("token"))
 							}
 							req, _ := createRequest("GET", "/cluster/status")
+							loading := ui.startLoading("Loading cluster status")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -702,29 +715,27 @@ func main() {
 								log.Fatal("Error decoding response: ", err)
 							}
 
-							fmt.Printf("backend: %s\n", status.Backend)
-							if status.ManagerAddress != "" {
-								fmt.Printf("manager: %s\n", status.ManagerAddress)
-							}
+							ui.section("Cluster Status", "")
+							ui.line("backend", status.Backend)
+							ui.line("manager", status.ManagerAddress)
 							if len(status.Nodes) == 0 {
 								return nil
 							}
 
-							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
-							fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
-							for _, node := range status.Nodes {
-								fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
-									node.Name,
-									node.Role,
-									node.Availability,
-									node.State,
-									node.Cpus,
-									float64(node.MemoryBytes)/(1024*1024*1024),
-									node.RunningTasks,
-									node.TotalTasks,
-								)
-							}
-							writer.Flush()
+							ui.table([]string{"node", "role", "availability", "state", "cpus", "memory", "running", "total"}, func(writer *tabwriter.Writer) {
+								for _, node := range status.Nodes {
+									fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+										node.Name,
+										node.Role,
+										node.Availability,
+										node.State,
+										node.Cpus,
+										float64(node.MemoryBytes)/(1024*1024*1024),
+										node.RunningTasks,
+										node.TotalTasks,
+									)
+								}
+							})
 							return nil
 						},
 					},
@@ -745,7 +756,9 @@ func main() {
 								log.Fatal("Role is required")
 							}
 							req, _ := createRequest("GET", "/cluster/join-token/"+role)
+							loading := ui.startLoading("Loading join token")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -760,6 +773,7 @@ func main() {
 								log.Fatal("Error decoding response: ", err)
 							}
 
+							ui.section("Join Command", role)
 							fmt.Println(joinToken.Command)
 							return nil
 						},
@@ -775,7 +789,9 @@ func main() {
 								config.UseTempToken(ctx.String("token"))
 							}
 							req, _ := createRequest("GET", "/cluster/join-token/worker")
+							loading := ui.startLoading("Loading worker bootstrap")
 							resp, err := httpClient.Do(req)
+							loading.stop()
 							if err != nil {
 								log.Fatal("Error making request: ", err)
 							}
@@ -790,6 +806,7 @@ func main() {
 								log.Fatal("Error decoding response: ", err)
 							}
 
+							ui.section("Worker Bootstrap", "Run this on the node you want to join")
 							fmt.Printf("curl -fsSL https://deploywithjig.askh.at/worker.sh | JIG_SWARM_JOIN_TOKEN=%q JIG_SWARM_MANAGER_ADDR=%q bash\n", joinToken.Token, joinToken.ManagerAddress)
 							return nil
 						},
@@ -850,7 +867,9 @@ func listDeployments(ctx *cli.Context) error {
 		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/deployments")
+	loading := ui.startLoading("Loading deployments")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		log.Fatal("Error making request: ", err)
 	}
@@ -866,32 +885,64 @@ func listDeployments(ctx *cli.Context) error {
 		log.Fatal("Error unmarshalling response: ", err)
 	}
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
-	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\tkind\treplicas\trule\tstate\tstatus\thas rollback")
-	for _, deployment := range deployments {
-		printDeploymentRow(writer, deployment, "")
+	ui.section("Deployments", fmt.Sprintf("%d total", len(deployments)))
+	if len(deployments) == 0 {
+		ui.warning("No deployments found")
+		return nil
 	}
-	writer.Flush()
+	ui.table([]string{"name", "kind", "replicas", "route", "state", "status", "rollback"}, func(writer *tabwriter.Writer) {
+		for index, deployment := range deployments {
+			printDeploymentRow(writer, deployment, "", true, index == len(deployments)-1)
+		}
+	})
 	return nil
 }
 
-func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string) {
+func logsCommand(ctx *cli.Context) error {
+	if ctx.String("token") != "" {
+		config.UseTempToken(ctx.String("token"))
+	}
+	name := ctx.Args().First()
+	if name == "" {
+		log.Fatal("Name is required")
+	}
+	req, _ := createRequest("GET", "/deployments/"+name+"/logs")
+	loading := ui.startLoading("Loading logs")
+	resp, err := httpClient.Do(req)
+	loading.stop()
+	if err != nil {
+		log.Fatal("Error making request: ", err)
+	}
+
+	if resp.StatusCode != 200 {
+		log.Fatal("Error getting logs: ", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal("Error reading request: ", err)
+	}
+	ui.section("Logs", name)
+	fmt.Print(string(body))
+
+	return nil
+}
+
+func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string, isRoot bool, isLast bool) {
 	replicas := ""
 	if deployment.Replicas > 0 {
 		replicas = fmt.Sprint(deployment.Replicas)
 	}
+	name := formatDeploymentName(prefix, deployment.Name, isRoot, isLast)
 	if len(deployment.Children) > 0 {
-		fmt.Fprintf(writer, "  %s%s\t%s\t%s\t\t\t%s\t\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Status)
-		for _, child := range deployment.Children {
-			printDeploymentRow(writer, child, prefix+"\\_")
+		fmt.Fprintf(writer, "%s\t%s\t%s\t\t\t%s\t%s\n", name, deployment.Kind, replicas, deployment.Status, yesOrNo(deployment.HasRollback))
+		childPrefix := childDeploymentPrefix(prefix, isRoot, isLast)
+		for index, child := range deployment.Children {
+			printDeploymentRow(writer, child, childPrefix, false, index == len(deployment.Children)-1)
 		}
 		return
 	}
-	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
-	for _, child := range deployment.Children {
-		printDeploymentRow(writer, child, prefix+"\\_")
-	}
+	fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", name, deployment.Kind, replicas, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
 }
 
 func yesOrNo(b bool) string {
@@ -906,7 +957,9 @@ func ListSecrets(ctx *cli.Context) error {
 		config.UseTempToken(ctx.String("token"))
 	}
 	req, _ := createRequest("GET", "/secrets")
+	loading := ui.startLoading("Loading secrets")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		log.Fatal("Error making request: ", err)
 	}
@@ -922,17 +975,16 @@ func ListSecrets(ctx *cli.Context) error {
 		log.Fatal("Error unmarshalling response: ", err)
 	}
 
-	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
-	fmt.Fprintln(os.Stdout, []any{"> Secrets:\n"}...)
-	if len(secretList.Secrets) > 0 {
-		fmt.Fprintln(writer, "  name")
-	} else {
-		fmt.Fprintln(writer, "  No secrets set yet 🤫")
+	ui.section("Secrets", fmt.Sprintf("%d configured", len(secretList.Secrets)))
+	if len(secretList.Secrets) == 0 {
+		ui.warning("No secrets configured")
+		return nil
 	}
-	for _, secret := range secretList.Secrets {
-		fmt.Fprintf(writer, "  %s\n", secret)
-	}
-	writer.Flush()
+	ui.table([]string{"name"}, func(writer *tabwriter.Writer) {
+		for _, secret := range secretList.Secrets {
+			fmt.Fprintf(writer, "%s\n", secret)
+		}
+	})
 	return nil
 }
 
@@ -949,7 +1001,9 @@ func DeleteSecret(ctx *cli.Context) error {
 
 	req, _ := createRequest("DELETE", "/secrets/"+name)
 
+	loading := ui.startLoading("Removing secret")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 
 	if err != nil {
 		log.Fatal("Error making request: ", err)
@@ -961,7 +1015,7 @@ func DeleteSecret(ctx *cli.Context) error {
 		println(io.ReadAll(resp.Body))
 	}
 
-	println("Successfully removed a secret ❌")
+	ui.success("Removed secret " + name)
 	return nil
 }
 
@@ -978,7 +1032,9 @@ func InspectSecret(ctx *cli.Context) error {
 
 	req, _ := createRequest("GET", "/secrets/"+name)
 
+	loading := ui.startLoading("Loading secret")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		log.Fatal("Error reading secret: ", err.Error())
 	}
@@ -995,8 +1051,9 @@ func InspectSecret(ctx *cli.Context) error {
 
 	json.Unmarshal(bodyRes, &secret)
 
-	println("Secret name:", name)
-	println("Secret value:", secret.Value)
+	ui.section("Secret", name)
+	ui.line("name", name)
+	ui.line("value", secret.Value)
 	return nil
 }
 
@@ -1024,18 +1081,20 @@ func AddSecret(ctx *cli.Context) error {
 	}
 	req, _ := createRequest("POST", "/secrets")
 	req.Body = io.NopCloser(strings.NewReader(string(bodyBytes)))
+	loading := ui.startLoading("Creating secret")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		log.Fatal("Error making request: ", err)
 	}
 	if resp.StatusCode == 409 {
-		println("Secret already exists:", bodyToSend.Name)
+		ui.warning("Secret already exists: " + bodyToSend.Name)
 		return nil
 	}
 	if resp.StatusCode != 201 {
 		log.Fatal("Error creating secret: ", resp.Status)
 	}
 
-	println("Successfully created a secret ✨")
+	ui.success("Created secret " + bodyToSend.Name)
 	return nil
 }

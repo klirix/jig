@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types"
@@ -178,23 +179,34 @@ func deployCommand(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	localBuild := c.Bool("local")
 
 	if c.Bool("verbose") {
-		fmt.Println("Files to pack:")
+		ui.section("Package Preview", fmt.Sprintf("%d files", len(filesToPack)))
 		for _, file := range filesToPack {
-			fmt.Println("-", file)
+			fmt.Fprintf(os.Stdout, "  %s\n", file)
 		}
 	}
-	fmt.Printf("Packing %d files, ignoring: %v\n", len(filesToPack), ignorePatterns)
+	ui.section("Deploy", deploymentConfig.Name)
+	ui.line("files", fmt.Sprintf("%d", len(filesToPack)))
+	ui.line("ignored", strings.Join(ignorePatterns, ", "))
+	if hasComposeFile {
+		ui.line("compose", deploymentConfig.ComposeFile)
+	}
+	if localBuild {
+		ui.line("build", "local image")
+	} else {
+		ui.line("build", "server-side")
+	}
 
 	uploadStream := newTarStream(filesToPack)
 	defer uploadStream.Close()
 
-	localBuild := c.Bool("local")
 	if hasComposeFile && localBuild {
 		return fmt.Errorf("local image deployments are not supported with compose files")
 	}
 	if localBuild {
+		ui.line("phase", "building local image")
 		dockerClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 		if err != nil {
 			return fmt.Errorf("create docker client: %w", err)
@@ -222,9 +234,12 @@ func deployCommand(c *cli.Context) error {
 	req.Header.Set("Content-Type", "application/x-tar")
 	req.Header.Set("x-jig-config", string(compactConfigBytes))
 	req.Header.Set("x-jig-image", fmt.Sprint(localBuild))
+	req.Header.Set("x-jig-verbose", fmt.Sprint(c.Bool("verbose")))
 	req.Body = &TrackableReader{ReadCloser: uploadStream}
 
+	loading := ui.startLoading("Uploading deployment")
 	resp, err := httpClient.Do(req)
+	loading.stop()
 	if err != nil {
 		return fmt.Errorf("make request: %w", err)
 	}
@@ -245,9 +260,10 @@ func deployCommand(c *cli.Context) error {
 	}
 
 	if localBuild {
-		fmt.Println("Successfully created a deployment")
+		ui.success("Created deployment " + deploymentConfig.Name)
 		return nil
 	}
 
+	ui.line("phase", "streaming remote build output")
 	return displayDockerOutput(resp.Body)
 }

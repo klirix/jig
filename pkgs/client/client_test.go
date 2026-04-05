@@ -158,8 +158,8 @@ func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
 		},
 	}
 
-	printDeploymentRow(writer, flat, "")
-	printDeploymentRow(writer, stack, "")
+	printDeploymentRow(writer, flat, "", true, false)
+	printDeploymentRow(writer, stack, "", true, true)
 	writer.Flush()
 
 	output := buffer.String()
@@ -171,8 +171,8 @@ func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
 		"yes",
 		"my-stack",
 		"stack",
-		"\\_api",
-		"\\_db",
+		"|- api",
+		"`- db",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
@@ -194,7 +194,7 @@ func TestPrintDeploymentRowSingleSwarmService(t *testing.T) {
 		HasRollback: true,
 	}
 
-	printDeploymentRow(writer, deployment, "")
+	printDeploymentRow(writer, deployment, "", true, true)
 	writer.Flush()
 
 	output := buffer.String()

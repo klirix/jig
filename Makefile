@@ -4,7 +4,8 @@ build-server:
 	go build -o bin/server pkgs/server/*
 
 build-client:
-	go build -o bin/jig pkgs/client/*
+	@echo "Building client"
+	go build -o bin/jig pkgs/client/*.go
 
 build: build-server build-client
 

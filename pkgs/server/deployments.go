@@ -3,7 +3,9 @@ package main
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +31,7 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	"github.com/go-chi/chi/v5"
 	"github.com/goccy/go-yaml"
@@ -599,6 +602,54 @@ func runComposeCommand(workdir string, args ...string) ([]byte, error) {
 	return runDockerCommand(workdir, append([]string{"compose"}, args...)...)
 }
 
+type commandLineWriter struct {
+	buffer bytes.Buffer
+	raw    bytes.Buffer
+	onLine func(string)
+}
+
+func (w *commandLineWriter) Write(p []byte) (int, error) {
+	w.raw.Write(p)
+	for _, b := range p {
+		if b == '\n' {
+			w.flushLine()
+			continue
+		}
+		w.buffer.WriteByte(b)
+	}
+	return len(p), nil
+}
+
+func (w *commandLineWriter) flushRemainder() {
+	if w.buffer.Len() == 0 {
+		return
+	}
+	w.flushLine()
+}
+
+func (w *commandLineWriter) flushLine() {
+	line := strings.TrimRight(w.buffer.String(), "\r")
+	w.buffer.Reset()
+	if w.onLine != nil {
+		w.onLine(line)
+	}
+}
+
+func runDockerCommandStreaming(workdir string, onLine func(string), args ...string) error {
+	cmd := exec.Command("docker", args...)
+	cmd.Dir = workdir
+
+	writer := &commandLineWriter{onLine: onLine}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
+	err := cmd.Run()
+	writer.flushRemainder()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(writer.raw.String()))
+	}
+	return nil
+}
+
 func listComposeServices(workdir, composeFile string) ([]string, error) {
 	output, err := runComposeCommand(workdir, "-f", composeFile, "config", "--services")
 	if err != nil {
@@ -752,6 +803,121 @@ func makeSwarmBuildOverride(project composeProject, stackName, registryHost stri
 	return string(output), images, nil
 }
 
+func writeSanitizedSwarmComposeFile(workdir, composeFile string) (string, error) {
+	input, err := os.ReadFile(filepath.Join(workdir, composeFile))
+	if err != nil {
+		return "", err
+	}
+
+	var config map[string]any
+	if err := yaml.Unmarshal(input, &config); err != nil {
+		return "", err
+	}
+
+	services, ok := config["services"].(map[string]any)
+	if ok {
+		for _, rawService := range services {
+			service, ok := rawService.(map[string]any)
+			if !ok {
+				continue
+			}
+			delete(service, "build")
+			delete(service, "x-jig")
+		}
+	}
+
+	output, err := yaml.Marshal(config)
+	if err != nil {
+		return "", err
+	}
+
+	filename := ".jig.stack.base.yaml"
+	if err := os.WriteFile(filepath.Join(workdir, filename), output, 0644); err != nil {
+		return "", err
+	}
+	return filename, nil
+}
+
+func isVerboseRequest(r *http.Request) bool {
+	return r.Header.Get("x-jig-verbose") == "true"
+}
+
+func writeResponseLine(w http.ResponseWriter, line string) {
+	if line == "" {
+		return
+	}
+	fmt.Fprintln(w, line)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func makeDeployOutputFilter(w http.ResponseWriter, stackName string, verbose bool) func(string) {
+	return func(line string) {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			return
+		}
+		if verbose {
+			writeResponseLine(w, trimmed)
+			return
+		}
+		switch {
+		case trimmed == "Ignoring unsupported options: build":
+			return
+		case strings.HasPrefix(trimmed, "Since --detach=false was not specified"):
+			return
+		case strings.HasPrefix(trimmed, "In a future release, --detach=false will become the default."):
+			return
+		case strings.HasPrefix(trimmed, "Updating service "):
+			serviceName := trimmed[len("Updating service "):]
+			if idx := strings.Index(serviceName, " (id:"); idx >= 0 {
+				serviceName = serviceName[:idx]
+			}
+			serviceName = strings.TrimPrefix(serviceName, stackName+"_")
+			writeResponseLine(w, "Updating "+serviceName)
+		case strings.HasPrefix(trimmed, "Creating service "):
+			serviceName := trimmed[len("Creating service "):]
+			if idx := strings.Index(serviceName, " (id:"); idx >= 0 {
+				serviceName = serviceName[:idx]
+			}
+			serviceName = strings.TrimPrefix(serviceName, stackName+"_")
+			writeResponseLine(w, "Creating "+serviceName)
+		default:
+			return
+		}
+	}
+}
+
+func hasDockerStreamHeader(header []byte) bool {
+	if len(header) < 8 {
+		return false
+	}
+	if header[0] != 1 && header[0] != 2 {
+		return false
+	}
+	return header[1] == 0 && header[2] == 0 && header[3] == 0 && int(binary.BigEndian.Uint32(header[4:8])) >= 0
+}
+
+func copyDockerLogStream(w io.Writer, logs io.Reader) error {
+	header := make([]byte, 8)
+	n, err := io.ReadFull(logs, header)
+	switch {
+	case err == nil:
+		if hasDockerStreamHeader(header) {
+			_, err = stdcopy.StdCopy(w, w, io.MultiReader(bytes.NewReader(header), logs))
+			return err
+		}
+		_, err = io.Copy(w, io.MultiReader(bytes.NewReader(header), logs))
+		return err
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		_, copyErr := w.Write(header[:n])
+		return copyErr
+	default:
+		return err
+	}
+}
+
 func pickComposePrimaryService(config jigtypes.DeploymentConfig, services []string) (string, error) {
 	if config.ComposeService != "" {
 		if slices.Contains(services, config.ComposeService) {
@@ -832,6 +998,7 @@ func removeDeploymentContainers(cli *client.Client, name string) (bool, error) {
 }
 
 func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request, config jigtypes.DeploymentConfig) {
+	verbose := isVerboseRequest(r)
 	tempDir, err := os.MkdirTemp("", "jig-compose-*")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -876,6 +1043,7 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 	}
 
 	if d.usesSwarm() {
+		w.Header().Set("Content-Type", "text/plain")
 		buildOverrideContents, builtImages, err := makeSwarmBuildOverride(project, config.Name, swarmRegistryHost())
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -890,12 +1058,14 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 			}
 
 			buildArgs := []string{"-p", config.Name, "-f", config.ComposeFile, "-f", filepath.Base(buildOverridePath), "build"}
-			if _, err := runComposeCommand(tempDir, buildArgs...); err != nil {
+			writeResponseLine(w, "Building images")
+			if err := runDockerCommandStreaming(tempDir, makeDeployOutputFilter(w, config.Name, verbose), append([]string{"compose"}, buildArgs...)...); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			for _, imageRef := range builtImages {
-				if _, err := runDockerCommand(tempDir, "push", imageRef); err != nil {
+				writeResponseLine(w, "Pushing "+imageRef)
+				if err := runDockerCommandStreaming(tempDir, makeDeployOutputFilter(w, config.Name, verbose), "push", imageRef); err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
@@ -913,22 +1083,24 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		stackArgs := []string{"stack", "deploy", "-c", config.ComposeFile}
-		if buildOverridePath != "" {
-			stackArgs = append(stackArgs, "-c", filepath.Base(buildOverridePath))
-		}
-		stackArgs = append(stackArgs, "-c", filepath.Base(overridePath), config.Name)
-
-		output, err := runDockerCommand(tempDir, stackArgs...)
+		sanitizedComposeFile, err := writeSanitizedSwarmComposeFile(tempDir, config.ComposeFile)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/plain")
-		if len(output) > 0 {
-			w.Write(output)
+		stackArgs := []string{"stack", "deploy", "--detach=true", "-c", sanitizedComposeFile}
+		if buildOverridePath != "" {
+			stackArgs = append(stackArgs, "-c", filepath.Base(buildOverridePath))
 		}
+		stackArgs = append(stackArgs, "-c", filepath.Base(overridePath), config.Name)
+
+		writeResponseLine(w, "Deploying stack")
+		if err := runDockerCommandStreaming(tempDir, makeDeployOutputFilter(w, config.Name, verbose), stackArgs...); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeResponseLine(w, "Stack updated")
 		return
 	}
 
@@ -2074,7 +2246,7 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 				logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
 					ShowStdout: true,
 					ShowStderr: true,
-					Details:    true,
+					Details:    false,
 				})
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2082,7 +2254,9 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 				}
 				defer logs.Close()
 				w.Header().Set("Content-Type", "text/plain")
-				io.Copy(w, logs)
+				if err := copyDockerLogStream(w, logs); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
 				return
 			}
 		}
@@ -2101,13 +2275,17 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 				logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
 					ShowStdout: true,
 					ShowStderr: true,
-					Details:    true,
+					Details:    false,
 				})
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				io.Copy(w, logs)
+				if err := copyDockerLogStream(w, logs); err != nil {
+					logs.Close()
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				logs.Close()
 				fmt.Fprint(w, "\n")
 			}
@@ -2122,7 +2300,7 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 			logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
 				ShowStdout: true,
 				ShowStderr: true,
-				Details:    true,
+				Details:    false,
 			})
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2130,7 +2308,9 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 			}
 			defer logs.Close()
 			w.Header().Set("Content-Type", "text/plain")
-			io.Copy(w, logs)
+			if err := copyDockerLogStream(w, logs); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 	}
@@ -2168,7 +2348,11 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 					return
 				}
-				io.Copy(w, logs)
+				if err := copyDockerLogStream(w, logs); err != nil {
+					logs.Close()
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
 				fmt.Fprint(w, "\n")
 			}
 		}
@@ -2187,7 +2371,10 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 		if len(target.containers) > 1 {
 			fmt.Fprintf(w, "== %s ==\n", deploymentDisplayName(containerInfo))
 		}
-		io.Copy(w, logs)
+		if err := copyDockerLogStream(w, logs); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		fmt.Fprint(w, "\n")
 	}
 }
