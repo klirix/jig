@@ -45,6 +45,17 @@ Create a starter config in a project directory:
 jig init
 ```
 
+`jig init` works in any project directory. Use the generated `jig.json` as the starting point and
+adjust it for a single-container app or a compose deployment.
+
+## Common workflow
+
+1. Initialize the project with `jig init`
+2. Edit `jig.json` and, for compose projects, add `composeFile` plus any `x-jig` blocks in the compose file
+3. Deploy with `jig deploy`
+4. Check the deployment with `jig ls`, `jig logs <name>`, or `jig stats`
+5. Delete it with `jig rm <name>` or `jig deployments rm <name>`
+
 ## Deployments
 
 Jig supports two deployment modes.

@@ -50,8 +50,9 @@
 				<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">What is Jig?</h3>
 				<hr class=" mb-10" />
 				<p>
-					Jig is a dead simple deployment tool to automate routine work with Docker and Traefik to
-					streamline running services on own virtual servers with following goals:
+					Jig is a dead simple deployment tool to automate routine work with Docker, Docker Compose,
+					and Traefik to streamline running services on your own virtual servers with the following
+					goals:
 				</p>
 				<ul class="space-y-6 ps-4 py-10 list-disc list-inside">
 					<li>
@@ -70,6 +71,11 @@
 						From one line deployments to keeping disk writes to absolute minimum streaming data whereever
 						this is possible, it is important to keep things fast for the comfortable
 						<i>blazingly fast™</i> automation
+					</li>
+					<li>
+						<span class="font-medium"> Stay practical: </span>
+						Single-container apps stay simple, while compose deployments let one upload describe a whole
+						stack and selectively expose only the services that should be routable
 					</li>
 				</ul>
 				<p>
@@ -154,18 +160,80 @@
 			<div class=" space-y-4 px-2 md:px-0 text-xl text-gray-800 dark:text-gray-200">
 				<h3 class=" my-3 text-2xl font-medium text-gray-900 dark:text-gray-100">Start deploying</h3>
 				<hr class=" mb-10" />
-				<p>Initiate jig project and create the config</p>
+				<p>Initiate a Jig project and create the config</p>
 				<CodeBlock language="bash" code="jig init" />
 				<p>
-					Deploy your project with a single command. Jig will pack the project, send it to the
-					server and build it remotely
+					Use <code class="rounded bg-gray-900 px-2">jig init</code> in any project directory to
+					create the starting config. For a classic single-container app, add a
+					<code class="rounded bg-gray-900 px-2">Dockerfile</code> and a
+					<code class="rounded bg-gray-900 px-2">jig.json</code>. Jig will pack the project, send it
+					to the server, and build it remotely
 				</p>
 				<CodeBlock language="bash" code="jig deploy" />
 				<p>
-					Or build it locally using docker and deploy the image to the server. This is useful for CI
-					and to save resources on the server
+					Use <code class="rounded bg-gray-900 px-2">jig ls</code> to check that it is running, then
+					<code class="rounded bg-gray-900 px-2">jig logs &lt;name&gt;</code> or
+					<code class="rounded bg-gray-900 px-2">jig stats</code> to inspect the live deployment
+				</p>
+				<p>
+					If the project contains <code class="rounded bg-gray-900 px-2">docker-compose.yaml</code>,
+					<code class="rounded bg-gray-900 px-2">docker-compose.yml</code>,
+					<code class="rounded bg-gray-900 px-2">compose.yaml</code>, or
+					<code class="rounded bg-gray-900 px-2">compose.yml</code>, Jig switches to compose mode
+					and deploys the stack with <code class="rounded bg-gray-900 px-2">docker compose</code>
+				</p>
+				<CodeBlock
+					language="json"
+					code={`{
+  "name": "my-stack",
+  "composeFile": "docker-compose.yaml",
+  "restartPolicy": "unless-stopped"
+}`}
+				/>
+				<p>
+					For legacy compose projects you can point Jig at the primary routed service with
+					<code class="rounded bg-gray-900 px-2">composeService</code>. For newer setups, add
+					<code class="rounded bg-gray-900 px-2">x-jig</code> blocks on the services you want Jig to
+					expose. Services without <code class="rounded bg-gray-900 px-2">x-jig</code> stay internal,
+					which is how you keep things like databases in the stack without giving them a public route
+				</p>
+				<CodeBlock
+					language="yaml"
+					code={`services:
+  frontend:
+    build: .
+    x-jig:
+      name: frontend
+      domain: app.example.com
+
+  api:
+    build: ./api
+    x-jig:
+      name: api
+      domain: api.example.com
+    environment:
+      # Pull this from a server-side Jig secret named "database-url"
+      DATABASE_URL: "@database-url"
+
+  db:
+    image: postgres:16
+    # No x-jig block here means this service stays internal to the compose stack`}
+				/>
+				<p>
+					Secret values in <code class="rounded bg-gray-900 px-2">envs</code> use the same
+					<code class="rounded bg-gray-900 px-2">@secret-name</code> convention, so a service can consume
+					the same server-side secret whether it is deployed alone or through compose
+				</p>
+				<p>
+					Local image deploys via <code class="rounded bg-gray-900 px-2">jig deploy -l</code> still work
+					for single-container projects, but are not supported for compose deployments
 				</p>
 				<CodeBlock language="bash" code="jig deploy -l" />
+				<p>
+					Delete a deployment with <code class="rounded bg-gray-900 px-2">jig rm &lt;name&gt;</code
+					>. Rollback is available for single-container deployments. Compose deployments are listed
+					and deletable, but rollback is intentionally disabled
+				</p>
 				<p>Let Traefik fetch certificates if you deploy with TLS enabled and you're done</p>
 			</div>
 		</div>
