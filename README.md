@@ -54,7 +54,8 @@ adjust it for a single-container app or a compose deployment.
 2. Edit `jig.json` and, for compose projects, add `composeFile` plus any `x-jig` blocks in the compose file
 3. Deploy with `jig deploy`
 4. Check the deployment with `jig ls`, `jig logs <name>`, or `jig stats`
-5. Delete it with `jig rm <name>` or `jig deployments rm <name>`
+5. For compose stacks, target a child service with `stack:service`, for example `jig deployments logs my-stack:api`
+6. Delete it with `jig rm <name>` or `jig deployments rm <name>`
 
 ## Deployments
 
@@ -140,10 +141,11 @@ Supported `jig.json` fields in compose mode:
 
 Behavior in compose mode:
 
-- Legacy compose mode treats the whole compose project as one Jig deployment and applies `jig.json` routing to one primary service.
+- Compose deployments render as a single stack with child services underneath it.
 - Compose services can opt into separate Jig deployments with an `x-jig` block inside the compose file.
-- Each service with `x-jig` becomes its own Jig deployment with its own route, middleware, and resolved secrets.
+- Each service with `x-jig` becomes its own child service with its own route, middleware, and resolved secrets.
 - Services without `x-jig` still run as part of the compose project but remain internal to Jig.
+- Use `stack:service` for targeted commands like logs, delete, and rollback checks.
 - Jig connects each managed `x-jig` service container to the `jig` Docker network.
 - Volumes must be declared in the compose file itself. `jig.json` `volumes` are rejected for compose deployments.
 - `jig deploy -l` is not supported for compose deployments.
@@ -185,8 +187,9 @@ Matching top-level `jig.json` for the compose project:
 
 This gives you:
 
-- one Jig deployment named `frontend` routed at `app.example.com`
-- one Jig deployment named `api` routed at `api.example.com`
+- one stack deployment named `my-stack`
+- one child service named `frontend` routed at `app.example.com`
+- one child service named `api` routed at `api.example.com`
 - one internal `db` service that still runs but does not appear as its own Jig deployment
 
 ## Secrets

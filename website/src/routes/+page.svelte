@@ -176,6 +176,12 @@
 					<code class="rounded bg-gray-900 px-2">jig stats</code> to inspect the live deployment
 				</p>
 				<p>
+					For compose stacks, <code class="rounded bg-gray-900 px-2">jig ls</code> shows one stack
+					with child services underneath it. Target a child with
+					<code class="rounded bg-gray-900 px-2">stack:service</code>, for example
+					<code class="rounded bg-gray-900 px-2">jig deployments logs my-stack:api</code>
+				</p>
+				<p>
 					If the project contains <code class="rounded bg-gray-900 px-2">docker-compose.yaml</code>,
 					<code class="rounded bg-gray-900 px-2">docker-compose.yml</code>,
 					<code class="rounded bg-gray-900 px-2">compose.yaml</code>, or
@@ -231,8 +237,10 @@
 				<CodeBlock language="bash" code="jig deploy -l" />
 				<p>
 					Delete a deployment with <code class="rounded bg-gray-900 px-2">jig rm &lt;name&gt;</code
-					>. Rollback is available for single-container deployments. Compose deployments are listed
-					and deletable, but rollback is intentionally disabled
+					>. Compose stacks use the same command shape for child services,
+					<code class="rounded bg-gray-900 px-2">jig rm my-stack:api</code>. Rollback is available
+					for single-container deployments. Compose deployments are listed and deletable, but
+					rollback is intentionally disabled
 				</p>
 				<p>Let Traefik fetch certificates if you deploy with TLS enabled and you're done</p>
 			</div>
