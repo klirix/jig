@@ -9,10 +9,15 @@ type DeploymentConfig struct {
 	Rule           string               `json:"rule" yaml:"rule"`
 	ComposeFile    string               `json:"composeFile" yaml:"composeFile"`
 	ComposeService string               `json:"composeService" yaml:"composeService"`
+	Placement      DeploymentPlacement  `json:"placement" yaml:"placement"`
 	Envs           map[string]string    `json:"envs" yaml:"envs"`
 	ExposePorts    map[string]string    `json:"exposePorts" yaml:"exposePorts"`
 	Volumes        []string             `json:"volumes" yaml:"volumes"`
 	Middlewares    DeploymentMiddleares `json:"middlewares" yaml:"middlewares"`
+}
+
+type DeploymentPlacement struct {
+	RequiredNodeLabels map[string]string `json:"requiredNodeLabels" yaml:"requiredNodeLabels"`
 }
 
 type DeploymentMiddleares struct {
@@ -33,10 +38,13 @@ type RateLimitMiddleware struct {
 type Deployment struct {
 	ID          string       `json:"id"`
 	Name        string       `json:"name"`
+	Kind        string       `json:"kind,omitempty"`
+	ParentName  string       `json:"parentName,omitempty"`
 	Rule        string       `json:"rule"`
 	Status      string       `json:"status"`
 	Lifetime    string       `json:"lifetime"`
 	HasRollback bool         `json:"hasRollback"`
+	Replicas    int          `json:"replicas,omitempty"`
 	Children    []Deployment `json:"children,omitempty"`
 }
 
@@ -58,6 +66,41 @@ type Stats struct {
 	CpuPercentage    float64 `json:"cpuPercentage"`
 	MemoryPercentage float64 `json:"memoryPercentage"`
 	MemoryBytes      float64 `json:"memoryBytes"`
+}
+
+type SwarmNodeStats struct {
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	Availability string `json:"availability"`
+	State        string `json:"state"`
+	Address      string `json:"address"`
+	Cpus         int64  `json:"cpus"`
+	MemoryBytes  int64  `json:"memoryBytes"`
+	RunningTasks int    `json:"runningTasks"`
+	TotalTasks   int    `json:"totalTasks"`
+}
+
+type DeploymentStatsResponse struct {
+	Mode  string           `json:"mode"`
+	Stats []Stats          `json:"stats,omitempty"`
+	Nodes []SwarmNodeStats `json:"nodes,omitempty"`
+}
+
+type DeploymentScaleRequest struct {
+	Replicas int `json:"replicas"`
+}
+
+type ClusterStatusResponse struct {
+	Backend        string           `json:"backend"`
+	Nodes          []SwarmNodeStats `json:"nodes,omitempty"`
+	ManagerAddress string           `json:"managerAddress,omitempty"`
+}
+
+type ClusterJoinTokenResponse struct {
+	Role           string `json:"role"`
+	Token          string `json:"token"`
+	Command        string `json:"command"`
+	ManagerAddress string `json:"managerAddress,omitempty"`
 }
 
 type TokenListResponse struct {

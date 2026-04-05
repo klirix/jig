@@ -147,7 +147,7 @@ func waitForContainerByLabel(t *testing.T, cli *client.Client, label string) doc
 func TestComposeDeploymentE2E(t *testing.T) {
 	cli := dockerIntegrationClient(t)
 
-	if err := ensureNetworkIsUp(cli); err != nil {
+	if err := ensureNetworkIsUp(cli, deploymentBackendContainers); err != nil {
 		t.Fatalf("ensure jig network: %v", err)
 	}
 

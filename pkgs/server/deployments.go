@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types"
@@ -25,6 +26,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/go-connections/nat"
@@ -80,7 +82,29 @@ func makeRule(config jigtypes.DeploymentConfig) string {
 	}
 }
 
+func deploymentRuleFromLabels(labels map[string]string) string {
+	name := labels["jig.name"]
+	if name == "" {
+		return ""
+	}
+	if rule := labels["traefik.http.routers."+name+`.rule`]; rule != "" {
+		return rule
+	}
+	return labels["traefik.http.routers."+name+`-secure.rule`]
+}
+
+type deploymentBackend string
+
+const (
+	deploymentBackendContainers deploymentBackend = "containers"
+	deploymentBackendSwarm      deploymentBackend = "swarm"
+)
+
 func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
+	return makeRoutingLabels(config)
+}
+
+func makeRoutingLabels(config jigtypes.DeploymentConfig) map[string]string {
 	name := config.Name
 	rule := makeRule(config)
 
@@ -95,6 +119,9 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 		"traefik.docker.network": "jig",
 		"jig.name":               name,
 		"jig.config":             configString,
+	}
+	if config.Port != 0 {
+		labels["traefik.http.services."+name+".loadbalancer.server.port"] = strconv.Itoa(config.Port)
 	}
 	middlewares := []string{}
 	keepTLS := config.Middlewares.NoTLS == nil || !*config.Middlewares.NoTLS
@@ -157,14 +184,14 @@ func makeLabels(config jigtypes.DeploymentConfig) map[string]string {
 }
 
 func makeContainerLabels(config jigtypes.DeploymentConfig) map[string]string {
+	return makeDeploymentLabels(config, "container")
+}
+
+func makeDeploymentLabels(config jigtypes.DeploymentConfig, kind string) map[string]string {
 	labels := map[string]string{
 		"jig.name": config.Name,
 	}
-	if config.ComposeFile != "" {
-		labels["jig.deployment-kind"] = "compose"
-	} else {
-		labels["jig.deployment-kind"] = "container"
-	}
+	labels["jig.deployment-kind"] = kind
 	return labels
 }
 
@@ -204,6 +231,65 @@ func makeRestartPolicy(config jigtypes.DeploymentConfig) (container.RestartPolic
 	return container.RestartPolicy{
 		Name: container.RestartPolicyMode(config.RestartPolicy),
 	}, nil
+}
+
+func makeSwarmRestartPolicy(config jigtypes.DeploymentConfig) (*swarm.RestartPolicy, error) {
+	if config.RestartPolicy == "" {
+		return nil, nil
+	}
+
+	condition := swarm.RestartPolicyConditionAny
+	switch {
+	case strings.HasPrefix(config.RestartPolicy, "unless-stopped"):
+		condition = swarm.RestartPolicyConditionAny
+	case strings.HasPrefix(config.RestartPolicy, "always"):
+		condition = swarm.RestartPolicyConditionAny
+	case strings.HasPrefix(config.RestartPolicy, "on-failure"):
+		condition = swarm.RestartPolicyConditionOnFailure
+	case strings.HasPrefix(config.RestartPolicy, "no"):
+		condition = swarm.RestartPolicyConditionNone
+	}
+
+	policy := &swarm.RestartPolicy{Condition: condition}
+	if strings.Contains(config.RestartPolicy, ":") {
+		parts := strings.Split(config.RestartPolicy, ":")
+		retryCount, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			return nil, errors.New("Failed to parse retry count")
+		}
+		policy.MaxAttempts = &retryCount
+	}
+	return policy, nil
+}
+
+func makeSwarmConstraints(config jigtypes.DeploymentConfig) ([]string, error) {
+	if len(config.Placement.RequiredNodeLabels) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, 0, len(config.Placement.RequiredNodeLabels))
+	for key := range config.Placement.RequiredNodeLabels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	constraints := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value := strings.TrimSpace(config.Placement.RequiredNodeLabels[key])
+		if strings.TrimSpace(key) == "" || value == "" {
+			return nil, errors.New("placement.requiredNodeLabels must contain non-empty keys and values")
+		}
+		constraints = append(constraints, fmt.Sprintf("node.labels.%s == %s", key, value))
+	}
+	return constraints, nil
+}
+
+func validateSwarmConfig(config jigtypes.DeploymentConfig) error {
+	if len(config.Volumes) > 0 && len(config.Placement.RequiredNodeLabels) == 0 {
+		return errors.New("Swarm deployments with bind mounts require placement.requiredNodeLabels")
+	}
+	_, err := makeSwarmConstraints(config)
+	return err
 }
 
 func untar(dst string, reader io.Reader) error {
@@ -256,7 +342,9 @@ type composeProject struct {
 }
 
 type composeProjectService struct {
-	Jig *jigtypes.DeploymentConfig `yaml:"x-jig"`
+	Image string                     `yaml:"image"`
+	Build any                        `yaml:"build"`
+	Jig   *jigtypes.DeploymentConfig `yaml:"x-jig"`
 }
 
 type composeManagedService struct {
@@ -326,9 +414,6 @@ func mergeDeploymentConfig(base, override jigtypes.DeploymentConfig, defaultName
 func validateComposeManagedConfig(config jigtypes.DeploymentConfig) error {
 	if len(config.Volumes) > 0 {
 		return errors.New("Compose deployments must configure volumes in the compose file")
-	}
-	if config.Port != 0 {
-		return errors.New("Compose deployments must configure ports in the compose file")
 	}
 	if len(config.ExposePorts) > 0 {
 		return errors.New("Compose deployments must configure published ports in the compose file")
@@ -491,7 +576,7 @@ func makeComposeOverride(managedServices []composeManagedService) string {
 }
 
 func makeComposeContainerLabels(service composeManagedService) map[string]string {
-	labels := makeContainerLabels(service.Config)
+	labels := makeDeploymentLabels(service.Config, "compose")
 	maps.Copy(labels, makeLabels(service.Config))
 	labels["jig.stack"] = service.StackName
 	labels["jig.service"] = service.DisplayName
@@ -500,14 +585,18 @@ func makeComposeContainerLabels(service composeManagedService) map[string]string
 	return labels
 }
 
-func runComposeCommand(workdir string, args ...string) ([]byte, error) {
-	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
+func runDockerCommand(workdir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("docker", args...)
 	cmd.Dir = workdir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return output, fmt.Errorf("%w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return output, nil
+}
+
+func runComposeCommand(workdir string, args ...string) ([]byte, error) {
+	return runDockerCommand(workdir, append([]string{"compose"}, args...)...)
 }
 
 func listComposeServices(workdir, composeFile string) ([]string, error) {
@@ -527,6 +616,140 @@ func listComposeServices(workdir, composeFile string) ([]string, error) {
 		return nil, errors.New("docker compose did not return any services")
 	}
 	return services, nil
+}
+
+func makeSwarmStackServiceLabels(service composeManagedService) map[string]string {
+	labels := makeDeploymentLabels(service.Config, "swarm-stack-service")
+	maps.Copy(labels, makeRoutingLabels(service.Config))
+	labels["jig.stack"] = service.StackName
+	labels["jig.service"] = service.DisplayName
+	labels["jig.display-name"] = service.StackName + ":" + service.DisplayName
+	labels["jig.name"] = service.Config.Name
+	return labels
+}
+
+func makeSwarmStackRestartPolicy(config jigtypes.DeploymentConfig) (map[string]any, error) {
+	if config.RestartPolicy == "" {
+		return nil, nil
+	}
+
+	condition := "any"
+	switch {
+	case strings.HasPrefix(config.RestartPolicy, "on-failure"):
+		condition = "on-failure"
+	case strings.HasPrefix(config.RestartPolicy, "no"):
+		condition = "none"
+	}
+
+	restartPolicy := map[string]any{
+		"condition": condition,
+	}
+	if strings.Contains(config.RestartPolicy, ":") {
+		parts := strings.Split(config.RestartPolicy, ":")
+		retryCount, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return nil, errors.New("Failed to parse retry count")
+		}
+		restartPolicy["max_attempts"] = retryCount
+	}
+	return restartPolicy, nil
+}
+
+func makeSwarmStackOverride(managedServices []composeManagedService) (string, error) {
+	servicesConfig := map[string]any{}
+	services := append([]composeManagedService{}, managedServices...)
+	slices.SortFunc(services, func(a, b composeManagedService) int {
+		return strings.Compare(a.ServiceName, b.ServiceName)
+	})
+
+	for _, service := range services {
+		serviceConfig := map[string]any{}
+		if service.Config.Hostname != "" {
+			serviceConfig["hostname"] = service.Config.Hostname
+		}
+		if len(service.Envs) > 0 {
+			serviceConfig["environment"] = service.Envs
+		}
+		serviceConfig["networks"] = map[string]any{
+			"jig": map[string]any{
+				"aliases": []string{internalHostname(service.Config)},
+			},
+		}
+		deployConfig := map[string]any{}
+
+		restartPolicy, err := makeSwarmStackRestartPolicy(service.Config)
+		if err != nil {
+			return "", err
+		}
+		if restartPolicy != nil {
+			deployConfig["restart_policy"] = restartPolicy
+		}
+
+		constraints, err := makeSwarmConstraints(service.Config)
+		if err != nil {
+			return "", err
+		}
+		if len(constraints) > 0 {
+			deployConfig["placement"] = map[string]any{
+				"constraints": constraints,
+			}
+		}
+
+		deployConfig["labels"] = makeSwarmStackServiceLabels(service)
+		serviceConfig["deploy"] = deployConfig
+		servicesConfig[service.ServiceName] = serviceConfig
+	}
+
+	overrideConfig := map[string]any{
+		"services": servicesConfig,
+		"networks": map[string]any{
+			"jig": map[string]any{
+				"external": true,
+			},
+		},
+	}
+	output, err := yaml.Marshal(overrideConfig)
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
+
+func makeSwarmBuildOverride(project composeProject, stackName, registryHost string) (string, []string, error) {
+	servicesConfig := map[string]any{}
+	images := make([]string, 0, len(project.Services))
+
+	serviceNames := make([]string, 0, len(project.Services))
+	for serviceName := range project.Services {
+		serviceNames = append(serviceNames, serviceName)
+	}
+	slices.Sort(serviceNames)
+
+	deployTag := fmt.Sprintf("%d", time.Now().UnixNano())
+	for _, serviceName := range serviceNames {
+		service := project.Services[serviceName]
+		if service.Build == nil {
+			continue
+		}
+
+		imageRef := fmt.Sprintf("%s/jig/%s/%s:%s", registryHost, stackName, serviceName, deployTag)
+		servicesConfig[serviceName] = map[string]any{
+			"image": imageRef,
+		}
+		images = append(images, imageRef)
+	}
+
+	if len(servicesConfig) == 0 {
+		return "", nil, nil
+	}
+
+	output, err := yaml.Marshal(map[string]any{
+		"services": servicesConfig,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return string(output), images, nil
 }
 
 func pickComposePrimaryService(config jigtypes.DeploymentConfig, services []string) (string, error) {
@@ -652,6 +875,63 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	if d.usesSwarm() {
+		buildOverrideContents, builtImages, err := makeSwarmBuildOverride(project, config.Name, swarmRegistryHost())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		buildOverridePath := ""
+		if buildOverrideContents != "" {
+			buildOverridePath = filepath.Join(tempDir, ".jig.stack.build.yaml")
+			if err := os.WriteFile(buildOverridePath, []byte(buildOverrideContents), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			buildArgs := []string{"-p", config.Name, "-f", config.ComposeFile, "-f", filepath.Base(buildOverridePath), "build"}
+			if _, err := runComposeCommand(tempDir, buildArgs...); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for _, imageRef := range builtImages {
+				if _, err := runDockerCommand(tempDir, "push", imageRef); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+
+		overridePath := filepath.Join(tempDir, ".jig.stack.override.yaml")
+		overrideContents, err := makeSwarmStackOverride(managedServices)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if err := os.WriteFile(overridePath, []byte(overrideContents), 0644); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		stackArgs := []string{"stack", "deploy", "-c", config.ComposeFile}
+		if buildOverridePath != "" {
+			stackArgs = append(stackArgs, "-c", filepath.Base(buildOverridePath))
+		}
+		stackArgs = append(stackArgs, "-c", filepath.Base(overridePath), config.Name)
+
+		output, err := runDockerCommand(tempDir, stackArgs...)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
+		if len(output) > 0 {
+			w.Write(output)
+		}
+		return
+	}
+
 	for _, service := range managedServices {
 		if _, err := removeDeploymentContainers(d.cli, service.Config.Name); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -686,6 +966,11 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 type DeploymentsRouter struct {
 	cli       *client.Client
 	secret_db *Secrets
+	backend   deploymentBackend
+}
+
+func (d *DeploymentsRouter) usesSwarm() bool {
+	return d.backend == deploymentBackendSwarm
 }
 
 func isRollbackContainer(name string, container types.Container) bool {
@@ -727,6 +1012,11 @@ type deploymentContainerGroup struct {
 type composeServiceGroup struct {
 	stackName string
 	services  map[string]deploymentContainerGroup
+}
+
+type swarmServiceGroup struct {
+	stackName string
+	services  map[string]swarm.Service
 }
 
 func betterContainer(candidate, current types.Container) bool {
@@ -803,6 +1093,8 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 			for _, childName := range childNames {
 				childGroup := stackGroup.services[childName]
 				child := deploymentFromContainer(childGroup.container, childName, false)
+				child.Kind = "stack-service"
+				child.ParentName = stackGroup.stackName
 				children = append(children, child)
 				if child.Status != "healthy" {
 					healthy = false
@@ -811,6 +1103,7 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 
 			parent := jigtypes.Deployment{
 				Name:     stackGroup.stackName,
+				Kind:     "stack",
 				Status:   "healthy",
 				Children: children,
 			}
@@ -836,11 +1129,38 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 	return deployments
 }
 
+func swarmDeploymentHealth(service swarm.Service) string {
+	if service.ServiceStatus != nil {
+		if service.ServiceStatus.DesiredTasks > 0 && service.ServiceStatus.RunningTasks == service.ServiceStatus.DesiredTasks {
+			return "healthy"
+		}
+		return "unhealthy"
+	}
+	return "healthy"
+}
+
+func swarmDeploymentFromService(service swarm.Service, name string) jigtypes.Deployment {
+	lifetime := service.CreatedAt.Format("2006-01-02 15:04:05")
+	if service.UpdateStatus != nil && service.UpdateStatus.Message != "" {
+		lifetime = service.UpdateStatus.Message
+	}
+	return jigtypes.Deployment{
+		ID:          service.ID,
+		Name:        name,
+		Rule:        deploymentRuleFromLabels(service.Spec.Labels),
+		Status:      swarmDeploymentHealth(service),
+		Lifetime:    lifetime,
+		HasRollback: service.PreviousSpec != nil,
+		Replicas:    swarmServiceDesiredReplicas(service),
+	}
+}
+
 func deploymentFromContainer(container types.Container, name string, hasRollback bool) jigtypes.Deployment {
 	return jigtypes.Deployment{
 		ID:          container.ID,
 		Name:        name,
-		Rule:        container.Labels["traefik.http.routers."+container.Labels["jig.name"]+`.rule`],
+		Kind:        "service",
+		Rule:        deploymentRuleFromLabels(container.Labels),
 		Status:      deploymentHealth(container.State),
 		Lifetime:    container.Status,
 		HasRollback: hasRollback,
@@ -943,18 +1263,351 @@ func pickContainerByExactName(containers []types.Container, exactName string) *t
 	}
 	return nil
 }
+func listContainerDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+	if err != nil {
+		return nil, err
+	}
+	return buildDeployments(containers), nil
+}
+
+func buildSwarmDeployments(services []swarm.Service) []jigtypes.Deployment {
+	singles := make([]jigtypes.Deployment, 0, len(services))
+	stacks := map[string]*swarmServiceGroup{}
+	for _, service := range services {
+		name, ok := service.Spec.Labels["jig.name"]
+		if !ok {
+			continue
+		}
+		switch service.Spec.Labels["jig.deployment-kind"] {
+		case "swarm":
+			deployment := swarmDeploymentFromService(service, name)
+			deployment.Kind = "service"
+			singles = append(singles, deployment)
+		case "swarm-stack-service":
+			stackName := service.Spec.Labels["jig.stack"]
+			serviceName := service.Spec.Labels["jig.service"]
+			if stackName == "" || serviceName == "" {
+				continue
+			}
+			group := stacks[stackName]
+			if group == nil {
+				group = &swarmServiceGroup{
+					stackName: stackName,
+					services:  map[string]swarm.Service{},
+				}
+				stacks[stackName] = group
+			}
+			group.services[serviceName] = service
+		}
+	}
+
+	stackNames := make([]string, 0, len(stacks))
+	for name := range stacks {
+		stackNames = append(stackNames, name)
+	}
+	slices.Sort(stackNames)
+	slices.SortFunc(singles, func(a, b jigtypes.Deployment) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+
+	deployments := make([]jigtypes.Deployment, 0, len(singles)+len(stackNames))
+	deployments = append(deployments, singles...)
+	for _, stackName := range stackNames {
+		group := stacks[stackName]
+		serviceNames := make([]string, 0, len(group.services))
+		for name := range group.services {
+			serviceNames = append(serviceNames, name)
+		}
+		slices.Sort(serviceNames)
+		children := make([]jigtypes.Deployment, 0, len(serviceNames))
+		healthy := true
+		for _, serviceName := range serviceNames {
+			service := group.services[serviceName]
+			child := swarmDeploymentFromService(service, serviceName)
+			child.Kind = "stack-service"
+			child.ParentName = stackName
+			children = append(children, child)
+			if child.Status != "healthy" {
+				healthy = false
+			}
+		}
+		parent := jigtypes.Deployment{
+			Name:     stackName,
+			Kind:     "stack",
+			Status:   "healthy",
+			Children: children,
+		}
+		if !healthy {
+			parent.Status = "unhealthy"
+		}
+		if len(children) > 0 {
+			parent.ID = children[0].ID
+			parent.Rule = children[0].Rule
+			parent.Lifetime = children[0].Lifetime
+		}
+		deployments = append(deployments, parent)
+	}
+	slices.SortFunc(deployments, func(a, b jigtypes.Deployment) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return deployments
+}
+
+func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return buildSwarmDeployments(services), nil
+}
+
+func swarmServiceDesiredReplicas(service swarm.Service) int {
+	if service.ServiceStatus != nil {
+		return int(service.ServiceStatus.DesiredTasks)
+	}
+	if service.Spec.Mode.Replicated != nil && service.Spec.Mode.Replicated.Replicas != nil {
+		return int(*service.Spec.Mode.Replicated.Replicas)
+	}
+	return 0
+}
+
+func findSwarmServiceByDeploymentName(cli *client.Client, name string) (*swarm.Service, error) {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", "jig.name="+name)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, service := range services {
+		if service.Spec.Labels["jig.deployment-kind"] == "swarm" {
+			return &service, nil
+		}
+	}
+	return nil, nil
+}
+
+func findSwarmServicesByStack(cli *client.Client, stackName string) ([]swarm.Service, error) {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{
+		Filters: filters.NewArgs(filters.Arg("label", "jig.stack="+stackName)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make([]swarm.Service, 0, len(services))
+	for _, service := range services {
+		if service.Spec.Labels["jig.deployment-kind"] == "swarm-stack-service" {
+			result = append(result, service)
+		}
+	}
+	return result, nil
+}
+
+func findSwarmServiceByStackAndServiceName(cli *client.Client, stackName, serviceName string) (*swarm.Service, error) {
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{
+		Filters: filters.NewArgs(
+			filters.Arg("label", "jig.stack="+stackName),
+			filters.Arg("label", "jig.service="+serviceName),
+		),
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, service := range services {
+		if service.Spec.Labels["jig.deployment-kind"] == "swarm-stack-service" {
+			return &service, nil
+		}
+	}
+	return nil, nil
+}
+
+func removeDeploymentServices(cli *client.Client, name string) (bool, error) {
+	service, err := findSwarmServiceByDeploymentName(cli, name)
+	if err != nil || service == nil {
+		return false, err
+	}
+	return true, cli.ServiceRemove(context.Background(), service.ID)
+}
+
+func scaleSwarmDeployment(cli *client.Client, name string, replicas uint64) error {
+	service, err := findSwarmServiceByDeploymentName(cli, name)
+	if err != nil {
+		return err
+	}
+	if service == nil {
+		return errors.New("swarm deployment not found")
+	}
+
+	var config jigtypes.DeploymentConfig
+	if configString := service.Spec.Labels["jig.config"]; configString != "" {
+		if err := json.Unmarshal([]byte(configString), &config); err != nil {
+			return fmt.Errorf("invalid deployment config on service: %w", err)
+		}
+	}
+	if len(config.Placement.RequiredNodeLabels) > 0 {
+		return errors.New("Scaling is not supported for deployments with placement.requiredNodeLabels")
+	}
+
+	inspected, _, err := cli.ServiceInspectWithRaw(context.Background(), service.ID, types.ServiceInspectOptions{})
+	if err != nil {
+		return err
+	}
+	if inspected.Spec.Mode.Replicated == nil {
+		return errors.New("Scaling is only supported for replicated services")
+	}
+
+	spec := inspected.Spec
+	spec.Mode.Replicated.Replicas = &replicas
+	_, err = cli.ServiceUpdate(context.Background(), inspected.ID, inspected.Version, spec, types.ServiceUpdateOptions{})
+	return err
+}
+
+func swarmNodeStats(cli *client.Client) ([]jigtypes.SwarmNodeStats, error) {
+	nodes, err := cli.NodeList(context.Background(), types.NodeListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := cli.TaskList(context.Background(), types.TaskListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	taskCounts := map[string]struct{ running, total int }{}
+	for _, task := range tasks {
+		counts := taskCounts[task.NodeID]
+		counts.total++
+		if task.Status.State == swarm.TaskStateRunning {
+			counts.running++
+		}
+		taskCounts[task.NodeID] = counts
+	}
+
+	result := make([]jigtypes.SwarmNodeStats, 0, len(nodes))
+	for _, node := range nodes {
+		counts := taskCounts[node.ID]
+		result = append(result, jigtypes.SwarmNodeStats{
+			Name:         node.Description.Hostname,
+			Role:         string(node.Spec.Role),
+			Availability: string(node.Spec.Availability),
+			State:        string(node.Status.State),
+			Address:      node.Status.Addr,
+			Cpus:         node.Description.Resources.NanoCPUs / 1_000_000_000,
+			MemoryBytes:  node.Description.Resources.MemoryBytes,
+			RunningTasks: counts.running,
+			TotalTasks:   counts.total,
+		})
+	}
+	slices.SortFunc(result, func(a, b jigtypes.SwarmNodeStats) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return result, nil
+}
+
+func makeSwarmEndpointSpec(config jigtypes.DeploymentConfig) (*swarm.EndpointSpec, error) {
+	if len(config.ExposePorts) == 0 {
+		return nil, nil
+	}
+
+	ports := make([]swarm.PortConfig, 0, len(config.ExposePorts))
+	for portProto, hostPort := range config.ExposePorts {
+		target, err := strconv.ParseUint(portProto, 10, 32)
+		protocol := swarm.PortConfigProtocolTCP
+		if err != nil {
+			targetPort, proto, splitOK := strings.Cut(portProto, "/")
+			if !splitOK {
+				return nil, errors.New("Invalid port format")
+			}
+			target, err = strconv.ParseUint(targetPort, 10, 32)
+			if err != nil {
+				return nil, errors.New("Invalid port format")
+			}
+			if strings.EqualFold(proto, "udp") {
+				protocol = swarm.PortConfigProtocolUDP
+			}
+		}
+		published, err := strconv.ParseUint(hostPort, 10, 32)
+		if err != nil {
+			return nil, errors.New("Invalid host port format")
+		}
+		ports = append(ports, swarm.PortConfig{
+			Protocol:      protocol,
+			TargetPort:    uint32(target),
+			PublishedPort: uint32(published),
+			PublishMode:   swarm.PortConfigPublishModeIngress,
+		})
+	}
+	return &swarm.EndpointSpec{Ports: ports}, nil
+}
+
+func makeSwarmServiceSpec(config jigtypes.DeploymentConfig, image string, envs []string) (swarm.ServiceSpec, error) {
+	mounts, err := makeVolumeMounts(config)
+	if err != nil {
+		return swarm.ServiceSpec{}, err
+	}
+	restartPolicy, err := makeSwarmRestartPolicy(config)
+	if err != nil {
+		return swarm.ServiceSpec{}, err
+	}
+	constraints, err := makeSwarmConstraints(config)
+	if err != nil {
+		return swarm.ServiceSpec{}, err
+	}
+	endpointSpec, err := makeSwarmEndpointSpec(config)
+	if err != nil {
+		return swarm.ServiceSpec{}, err
+	}
+
+	replicas := uint64(1)
+	labels := makeDeploymentLabels(config, "swarm")
+	maps.Copy(labels, makeRoutingLabels(config))
+
+	return swarm.ServiceSpec{
+		Annotations: swarm.Annotations{
+			Name:   config.Name,
+			Labels: labels,
+		},
+		TaskTemplate: swarm.TaskSpec{
+			ContainerSpec: &swarm.ContainerSpec{
+				Image:    image,
+				Env:      envs,
+				Hostname: internalHostname(config),
+				Labels:   labels,
+				Mounts:   mounts,
+			},
+			Networks: []swarm.NetworkAttachmentConfig{{
+				Target:  "jig",
+				Aliases: []string{internalHostname(config)},
+			}},
+			RestartPolicy: restartPolicy,
+			Placement: &swarm.Placement{
+				Constraints: constraints,
+			},
+		},
+		Mode: swarm.ServiceMode{
+			Replicated: &swarm.ReplicatedService{Replicas: &replicas},
+		},
+		UpdateConfig: &swarm.UpdateConfig{Order: swarm.UpdateOrderStartFirst},
+		EndpointSpec: endpointSpec,
+	}, nil
+}
 
 func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Request) {
-
-	containers, err := d.cli.ContainerList(context.Background(), container.ListOptions{
-		All: true,
-	})
+	deployments, err := listContainerDeployments(d.cli)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	deployments := buildDeployments(containers)
+	if d.usesSwarm() {
+		swarmDeployments, err := listSwarmDeployments(d.cli)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		deployments = append(deployments, swarmDeployments...)
+	}
+	slices.SortFunc(deployments, func(a, b jigtypes.Deployment) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 
 	deploymentsJson, err := json.Marshal(deployments)
 	if err != nil {
@@ -969,7 +1622,6 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 
 func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 	cli := d.cli
-	// Get config from header
 	configString := r.Header.Get("x-jig-config")
 	jigImageHeader := r.Header.Get("x-jig-image")
 	isJigImage := jigImageHeader == "true"
@@ -994,8 +1646,13 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		d.deployCompose(w, r, config)
 		return
 	}
+	if d.usesSwarm() {
+		if err := validateSwarmConfig(config); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
-	// Check if image already exists
 	images, err := cli.ImageList(context.Background(), types.ImageListOptions{})
 	if err != nil {
 		log.Println("Failed to list images", err.Error())
@@ -1011,7 +1668,12 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Load image from body
+	imageRef := config.Name + ":latest"
+	swarmImageRef := config.Name + ":latest"
+	if d.usesSwarm() {
+		swarmImageRef = fmt.Sprintf("%s:swarm-%d", config.Name, time.Now().UnixNano())
+	}
+
 	if isJigImage {
 		res, err := cli.ImageLoad(context.Background(), r.Body, true)
 		if err != nil {
@@ -1026,10 +1688,19 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if d.usesSwarm() {
+			if err := cli.ImageTag(context.Background(), imageRef, swarmImageRef); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
 	} else {
-		// build image from buildcontext over the request body
+		buildTags := []string{imageRef}
+		if d.usesSwarm() {
+			buildTags = append(buildTags, swarmImageRef)
+		}
 		buildResponse, err := cli.ImageBuild(context.Background(), r.Body, types.ImageBuildOptions{
-			Tags:        []string{config.Name + ":latest"},
+			Tags:        buildTags,
 			Remove:      true,
 			ForceRemove: true,
 		})
@@ -1056,7 +1727,42 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Check if rollback container already exists
+	if d.usesSwarm() {
+		envs, err := makeEnvs(config.Envs, d.secret_db)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		spec, err := makeSwarmServiceSpec(config, swarmImageRef, envs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		existingService, err := findSwarmServiceByDeploymentName(cli, config.Name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if existingService == nil {
+			if _, err := cli.ServiceCreate(context.Background(), spec, types.ServiceCreateOptions{}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			if _, err := cli.ServiceUpdate(context.Background(), existingService.ID, existingService.Version, spec, types.ServiceUpdateOptions{}); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if !isJigImage {
+			w.Write([]byte("{\"stream\": \"\\nImage built and swarm service updated\"}\n"))
+			w.(http.Flusher).Flush()
+		}
+		return
+	}
+
 	rollbackContainer, err := containerExistsWithName(cli, config.Name+"-prev")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1194,6 +1900,34 @@ func (d *DeploymentsRouter) runDeploy(w http.ResponseWriter, r *http.Request) {
 func (d *DeploymentsRouter) deleteDeploy(w http.ResponseWriter, r *http.Request) {
 
 	name := r.PathValue("name")
+	if d.usesSwarm() {
+		if stackName, serviceName, found := strings.Cut(name, ":"); found && stackName != "" && serviceName != "" {
+			http.Error(w, "Removing individual services from a swarm stack is not supported", http.StatusBadRequest)
+			return
+		}
+		stackServices, err := findSwarmServicesByStack(d.cli, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(stackServices) > 0 {
+			if _, err := runDockerCommand("", "stack", "rm", name); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		found, err := removeDeploymentServices(d.cli, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if found {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 	target, err := resolveDeploymentTarget(d.cli, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1215,6 +1949,54 @@ func (d *DeploymentsRouter) deleteDeploy(w http.ResponseWriter, r *http.Request)
 func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Request) {
 	cli := d.cli
 	name := r.PathValue("name")
+	if d.usesSwarm() {
+		if stackName, serviceName, found := strings.Cut(name, ":"); found && stackName != "" && serviceName != "" {
+			service, err := findSwarmServiceByStackAndServiceName(cli, stackName, serviceName)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if service != nil {
+				if service.PreviousSpec == nil {
+					http.Error(w, "Rollback is not available for this swarm stack service", http.StatusBadRequest)
+					return
+				}
+				_, err = cli.ServiceUpdate(context.Background(), service.ID, service.Version, service.Spec, types.ServiceUpdateOptions{
+					Rollback: "previous",
+				})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+		if stackServices, err := findSwarmServicesByStack(cli, name); err == nil && len(stackServices) > 0 {
+			http.Error(w, "Rollback is not supported for whole swarm stacks", http.StatusBadRequest)
+			return
+		}
+		service, err := findSwarmServiceByDeploymentName(cli, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if service != nil {
+			if service.PreviousSpec == nil {
+				http.Error(w, "Rollback is not available for this swarm deployment", http.StatusBadRequest)
+				return
+			}
+			_, err = cli.ServiceUpdate(context.Background(), service.ID, service.Version, service.Spec, types.ServiceUpdateOptions{
+				Rollback: "previous",
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+	}
 
 	target, err := resolveDeploymentTarget(cli, name)
 	if err != nil {
@@ -1281,6 +2063,77 @@ func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Re
 func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Request) {
 
 	name := r.PathValue("name")
+	if dr.usesSwarm() {
+		if stackName, serviceName, found := strings.Cut(name, ":"); found && stackName != "" && serviceName != "" {
+			service, err := findSwarmServiceByStackAndServiceName(dr.cli, stackName, serviceName)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if service != nil {
+				logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
+					ShowStdout: true,
+					ShowStderr: true,
+					Details:    true,
+				})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				defer logs.Close()
+				w.Header().Set("Content-Type", "text/plain")
+				io.Copy(w, logs)
+				return
+			}
+		}
+		stackServices, err := findSwarmServicesByStack(dr.cli, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(stackServices) > 0 {
+			w.Header().Set("Content-Type", "text/plain")
+			slices.SortFunc(stackServices, func(a, b swarm.Service) int {
+				return strings.Compare(a.Spec.Labels["jig.service"], b.Spec.Labels["jig.service"])
+			})
+			for _, service := range stackServices {
+				fmt.Fprintf(w, "== %s:%s ==\n", name, service.Spec.Labels["jig.service"])
+				logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
+					ShowStdout: true,
+					ShowStderr: true,
+					Details:    true,
+				})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				io.Copy(w, logs)
+				logs.Close()
+				fmt.Fprint(w, "\n")
+			}
+			return
+		}
+		service, err := findSwarmServiceByDeploymentName(dr.cli, name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if service != nil {
+			logs, err := dr.cli.ServiceLogs(context.Background(), service.ID, container.LogsOptions{
+				ShowStdout: true,
+				ShowStderr: true,
+				Details:    true,
+			})
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			defer logs.Close()
+			w.Header().Set("Content-Type", "text/plain")
+			io.Copy(w, logs)
+			return
+		}
+	}
 	target, err := resolveDeploymentTarget(dr.cli, name)
 
 	if err != nil {
@@ -1339,7 +2192,55 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 	}
 }
 
+func (dr *DeploymentsRouter) scaleDeployment(w http.ResponseWriter, r *http.Request) {
+	if !dr.usesSwarm() {
+		http.Error(w, "Scaling is only supported on swarm-backed instances", http.StatusBadRequest)
+		return
+	}
+
+	name := r.PathValue("name")
+	var request jigtypes.DeploymentScaleRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid scale request", http.StatusBadRequest)
+		return
+	}
+	if request.Replicas < 1 {
+		http.Error(w, "Replicas must be at least 1", http.StatusBadRequest)
+		return
+	}
+
+	service, err := findSwarmServiceByDeploymentName(dr.cli, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if service == nil {
+		http.Error(w, "Scaling is only supported for singular swarm service deployments", http.StatusBadRequest)
+		return
+	}
+
+	if err := scaleSwarmDeployment(dr.cli, name, uint64(request.Replicas)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.Request) {
+	if dr.usesSwarm() {
+		nodes, err := swarmNodeStats(dr.cli)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		respondWithJson(w, http.StatusOK, jigtypes.DeploymentStatsResponse{
+			Mode:  "swarm",
+			Nodes: nodes,
+		})
+		return
+	}
+
 	containers, err := dr.cli.ContainerList(context.Background(), container.ListOptions{
 		Filters: filters.NewArgs(filters.KeyValuePair{Key: "label", Value: "jig.name"}),
 	})
@@ -1389,15 +2290,10 @@ func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.R
 		})
 	}
 
-	statsJson, err := json.Marshal(allStats)
-	if err != nil {
-		log.Print("Failed to marshal stats")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(statsJson)
-
+	respondWithJson(w, http.StatusOK, jigtypes.DeploymentStatsResponse{
+		Mode:  "containers",
+		Stats: allStats,
+	})
 }
 
 func (dr DeploymentsRouter) Router() (r chi.Router) {
@@ -1409,6 +2305,8 @@ func (dr DeploymentsRouter) Router() (r chi.Router) {
 	r.Delete("/{name}", dr.deleteDeploy)
 
 	r.Post("/{name}/rollback", dr.rollbackDeployment)
+
+	r.Post("/{name}/scale", dr.scaleDeployment)
 
 	r.Get("/{name}/logs", dr.getDeploymentLogs)
 

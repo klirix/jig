@@ -23,7 +23,203 @@ Docker is required on the server.
 curl -fsSL https://deploywithjig.askh.at/init.sh | bash
 ```
 
-This installs Traefik and Jig, asks for the initial settings, and prints a login command for the client.
+This installs Traefik and Jig, asks for the initial settings, and prints a login command for the client. The bootstrap script now offers two control-plane modes:
+
+- `public`: expose the Jig API through Traefik on a public domain
+- `tailscale`: keep the Jig API private on your tailnet with `tailscale serve`
+
+If the `tailscale` CLI is already installed on the server, the script defaults to `tailscale`.
+
+### Tailscale control plane mode
+
+Use this when you want deployed apps to stay public, but you want the Jig API itself to be reachable only over your tailnet.
+
+Requirements:
+
+- Tailscale installed and connected on the server
+- HTTPS enabled for Tailscale Serve in your tailnet
+- Tailscale ACLs that limit who can reach the manager node
+
+In `tailscale` mode, `init.sh`:
+
+- does not expose the `jig` service through public Traefik routes
+- configures `tailscale serve` to proxy the control plane to `https://<node>.<tailnet>.ts.net`
+- makes the printed `jig login ...` command use that Tailscale URL
+- leaves Traefik public for application traffic
+
+Networking details:
+
+- standalone mode binds the Jig API to `127.0.0.1:5050`, then exposes it through Tailscale Serve
+- Swarm mode keeps the Jig API on `127.0.0.1:5050` by running the control plane as a local manager container while still using the Swarm backend
+
+In Tailscale mode, the bootstrap keeps the control plane loopback-only automatically. You do not need a separate public firewall exception for `5050`.
+
+### Swarm worker setup
+
+Use this on every additional node that should join the Swarm and run Jig workloads.
+
+The bootstrap script:
+
+- configures the Docker daemon for the internal Jig registry
+- joins the node to the Swarm
+- leaves ingress labeling to the manager, if needed
+- reminds you to block inbound `5000/tcp` from external networks
+
+Example:
+
+```bash
+curl -fsSL https://deploywithjig.askh.at/worker.sh | bash
+```
+
+You will be prompted for:
+
+- the Swarm join token
+- the manager address
+
+The manager can print a worker join token with:
+
+```bash
+jig cluster join-token worker
+```
+
+To print a ready-to-run worker bootstrap command, use:
+
+```bash
+jig cluster join-worker
+```
+
+### Swarm-backed server setup
+
+Use this path when the Jig server itself should run on a Docker Swarm manager and deploy single-service apps as Swarm services.
+
+The easiest path is still the bootstrap script:
+
+```bash
+curl -fsSL https://deploywithjig.askh.at/init.sh | bash
+```
+
+On a Swarm manager, the script now:
+
+- detects Swarm automatically
+- labels the current node with `jig.ingress=true`
+- deploys the `jig` server as a Swarm service in `public` mode
+- keeps the `jig` control plane as a local manager container in `tailscale` mode
+- lets the server create Traefik as a Swarm service pinned to nodes with `jig.ingress=true`
+- lets the server create an internal registry service published through the Swarm routing mesh on `127.0.0.1:5000`
+
+Swarm nodes must trust that registry endpoint as an insecure registry:
+
+```json
+{
+  "insecure-registries": ["127.0.0.1:5000"]
+}
+```
+
+Apply that daemon config on every Swarm node and restart Docker before deploying Swarm stacks.
+Block inbound `5000/tcp` from external networks on every node. If that port is reachable publicly, the registry is a serious security risk.
+Only `80/tcp` and `443/tcp` should be exposed publicly for application traffic.
+
+The worker bootstrap script can apply that daemon config automatically on Debian/Ubuntu systems if `jq` is present, otherwise it will tell you what to add.
+
+Manual setup is still available if you want to control it directly:
+
+1. Initialize Swarm on the manager node if it is not already active:
+
+```bash
+docker swarm init
+```
+
+2. Create the shared overlay network that Jig and Traefik will use:
+
+```bash
+docker network create --driver overlay --attachable jig
+```
+
+3. Create a persistent directory for Jig state on the manager:
+
+```bash
+mkdir -p /var/jig
+```
+
+4. Choose the public domain for the Jig API and export the required env vars:
+
+```bash
+export JIG_DOMAIN=jig.example.com
+export JIG_SSL_EMAIL=ops@example.com
+export JIG_VERCEL_APIKEY=your-vercel-token
+```
+
+If you do not use Vercel DNS challenge, leave `JIG_VERCEL_APIKEY` unset and Jig will configure Traefik with the HTTP challenge instead.
+
+5. Pull the Jig image:
+
+```bash
+docker pull askhatsaiapov/jig:latest
+```
+
+6. Label the internet-facing node for ingress placement:
+
+```bash
+docker node update --label-add jig.ingress=true <node-name>
+```
+
+7. Deploy the Jig server itself as a Swarm service on a manager node:
+
+```bash
+docker service create \
+  --name jig \
+  --constraint 'node.role == manager' \
+  --network jig \
+  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \
+  --mount type=bind,src=/var/jig,dst=/var/jig \
+  --env JIG_DOMAIN=$JIG_DOMAIN \
+  --env JIG_SSL_EMAIL=$JIG_SSL_EMAIL \
+  --env JIG_VERCEL_APIKEY=$JIG_VERCEL_APIKEY \
+  --label traefik.enable=true \
+  --label traefik.docker.network=jig \
+  --label traefik.http.services.jig.loadbalancer.server.port=5000 \
+  --label 'traefik.http.middlewares.https-only.redirectscheme.scheme=https' \
+  --label 'traefik.http.middlewares.https-only.redirectscheme.permanent=true' \
+  --label "traefik.http.routers.jig.rule=Host(\`$JIG_DOMAIN\`)" \
+  --label 'traefik.http.routers.jig.entrypoints=web' \
+  --label 'traefik.http.routers.jig.middlewares=https-only' \
+  --label "traefik.http.routers.jig-secure.rule=Host(\`$JIG_DOMAIN\`)" \
+  --label 'traefik.http.routers.jig-secure.entrypoints=websecure' \
+  --label 'traefik.http.routers.jig-secure.tls=true' \
+  --label 'traefik.http.routers.jig-secure.tls.certresolver=defaultresolver' \
+  askhatsaiapov/jig:latest
+```
+
+8. Watch the service logs until startup completes:
+
+```bash
+docker service logs -f jig
+```
+
+On startup, Jig will detect that it is running on a Swarm manager, ensure the `jig` overlay network exists, and create a central Traefik Swarm service if one is not already present.
+
+9. Fetch the initial login token from the service logs:
+
+```bash
+docker service logs jig --tail 50
+```
+
+Look for the printed `jig login https://...+TOKEN` line and use that on your workstation.
+
+10. Point DNS for `JIG_DOMAIN` at the node or nodes that handle the published Traefik ports `80` and `443`. By default that should be the node labeled `jig.ingress=true`.
+
+11. Deploy applications normally with `jig deploy`.
+
+Notes for Swarm-backed deployments:
+
+- Single-service non-Compose apps are deployed as Docker services.
+- Compose deployments become Swarm stacks.
+- Swarm stack builds are pushed to the internal registry at `127.0.0.1:5000`, so every Swarm node must trust that endpoint as an insecure registry.
+- Block inbound `5000/tcp` from external networks. If that port is reachable publicly, the registry is a serious security risk.
+- Swarm apps with bind mounts must set `placement.requiredNodeLabels` in `jig.json`.
+- Jig stats are not available for Swarm deployments.
+- The Jig server service should stay constrained to a manager because it needs Docker API access and Swarm control-plane access.
+- Traefik is pinned to nodes labeled `jig.ingress=true`.
 
 ### Client setup
 
@@ -77,6 +273,7 @@ Supported `jig.json` fields in this mode:
 - `exposePorts`
 - `volumes`
 - `middlewares`
+- `placement.requiredNodeLabels` in Swarm mode when bind mounts are used
 
 Example:
 
@@ -109,9 +306,32 @@ RUN npm run build
 CMD ["npm", "start"]
 ```
 
+Swarm-specific example with a bind mount pinned to labeled nodes:
+
+```json
+{
+  "name": "frontend",
+  "domain": "app.example.com",
+  "port": 3000,
+  "restartPolicy": "unless-stopped",
+  "volumes": ["/var/lib/frontend:/app/data"],
+  "placement": {
+    "requiredNodeLabels": {
+      "jig.disk": "frontend-data"
+    }
+  }
+}
+```
+
+Apply the matching label on the target node before deploying:
+
+```bash
+docker node update --label-add jig.disk=frontend-data <node-name>
+```
+
 ### Compose deployments
 
-If the project contains `docker-compose.yaml`, `docker-compose.yml`, `compose.yaml`, or `compose.yml`, Jig deploys it through `docker compose`.
+If the project contains `docker-compose.yaml`, `docker-compose.yml`, `compose.yaml`, or `compose.yml`, Jig treats it as a grouped deployment. On standalone instances it uses `docker compose`. On Swarm-backed instances it deploys a Swarm stack.
 
 You can pin the compose file and, for legacy single-deployment compose projects, the primary routed service in `jig.json`:
 

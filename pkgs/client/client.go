@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -416,6 +417,47 @@ func main() {
 						},
 					},
 					{
+						Name:  "scale",
+						Usage: "Scale a singular swarm deployment",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args:      true,
+						ArgsUsage: " name replicas",
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							name := ctx.Args().Get(0)
+							replicasString := ctx.Args().Get(1)
+							if name == "" || replicasString == "" {
+								log.Fatal("Name and replicas are required")
+							}
+							replicas, err := strconv.Atoi(replicasString)
+							if err != nil {
+								log.Fatal("Replicas must be a number")
+							}
+							requestBody, err := json.Marshal(jigtypes.DeploymentScaleRequest{Replicas: replicas})
+							if err != nil {
+								log.Fatal("Error marshaling scale request: ", err)
+							}
+							req, _ := createRequest("POST", "/deployments/"+name+"/scale")
+							req.Header.Set("Content-Type", "application/json")
+							req.Body = io.NopCloser(bytes.NewReader(requestBody))
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusNoContent {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error scaling deployment: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+							fmt.Printf("Scaled %s to %d replicas\n", name, replicas)
+							return nil
+						},
+					},
+					{
 						Name:  "stats",
 						Usage: "Get resource usage stats",
 						Flags: []cli.Flag{
@@ -439,15 +481,31 @@ func main() {
 							if err != nil {
 								log.Fatal("Error reading request: ", err)
 							}
-							var stats []jigtypes.Stats
-							if err := json.Unmarshal(body, &stats); err != nil {
+							var statsResponse jigtypes.DeploymentStatsResponse
+							if err := json.Unmarshal(body, &statsResponse); err != nil {
 								log.Fatal("Error unmarshalling response: ", err)
 							}
 
 							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
-							fmt.Fprintln(writer, "name\tmemory\tcpu")
-							for _, stat := range stats {
-								fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%% \n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
+							if statsResponse.Mode == "swarm" {
+								fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
+								for _, node := range statsResponse.Nodes {
+									fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+										node.Name,
+										node.Role,
+										node.Availability,
+										node.State,
+										node.Cpus,
+										float64(node.MemoryBytes)/(1024*1024*1024),
+										node.RunningTasks,
+										node.TotalTasks,
+									)
+								}
+							} else {
+								fmt.Fprintln(writer, "name\tmemory\tcpu")
+								for _, stat := range statsResponse.Stats {
+									fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%% \n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
+								}
 							}
 							writer.Flush()
 							return nil
@@ -616,6 +674,129 @@ func main() {
 				},
 			},
 			{
+				Name: "cluster",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "status",
+						Usage: "Show cluster status",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							req, _ := createRequest("GET", "/cluster/status")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting cluster status: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var status jigtypes.ClusterStatusResponse
+							if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Printf("backend: %s\n", status.Backend)
+							if status.ManagerAddress != "" {
+								fmt.Printf("manager: %s\n", status.ManagerAddress)
+							}
+							if len(status.Nodes) == 0 {
+								return nil
+							}
+
+							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
+							fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
+							for _, node := range status.Nodes {
+								fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+									node.Name,
+									node.Role,
+									node.Availability,
+									node.State,
+									node.Cpus,
+									float64(node.MemoryBytes)/(1024*1024*1024),
+									node.RunningTasks,
+									node.TotalTasks,
+								)
+							}
+							writer.Flush()
+							return nil
+						},
+					},
+					{
+						Name:  "join-token",
+						Usage: "Get a swarm join token and command",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args:      true,
+						ArgsUsage: " worker|manager",
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							role := ctx.Args().First()
+							if role == "" {
+								log.Fatal("Role is required")
+							}
+							req, _ := createRequest("GET", "/cluster/join-token/"+role)
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting join token: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var joinToken jigtypes.ClusterJoinTokenResponse
+							if err := json.NewDecoder(resp.Body).Decode(&joinToken); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Println(joinToken.Command)
+							return nil
+						},
+					},
+					{
+						Name:  "join-worker",
+						Usage: "Print a worker bootstrap command",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							req, _ := createRequest("GET", "/cluster/join-token/worker")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting worker bootstrap command: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var joinToken jigtypes.ClusterJoinTokenResponse
+							if err := json.NewDecoder(resp.Body).Decode(&joinToken); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Printf("curl -fsSL https://deploywithjig.askh.at/worker.sh | JIG_SWARM_JOIN_TOKEN=%q JIG_SWARM_MANAGER_ADDR=%q bash\n", joinToken.Token, joinToken.ManagerAddress)
+							return nil
+						},
+					},
+				},
+			},
+			{
 				Name: "secrets",
 				Subcommands: []*cli.Command{
 					{
@@ -687,23 +868,30 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\thas rollback")
+	fmt.Fprintln(writer, "  name\tkind\treplicas\trule\tstate\tstatus\thas rollback")
 	for _, deployment := range deployments {
-		printDeploymentRow(writer, deployment, "", len(deployment.Children) > 0)
+		printDeploymentRow(writer, deployment, "")
 	}
 	writer.Flush()
 	return nil
 }
 
-func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string, isStack bool) {
-	if isStack {
-		fmt.Fprintf(writer, "  %s%s\t\t\t%s\t\n", prefix, deployment.Name, deployment.Status)
+func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string) {
+	replicas := ""
+	if deployment.Replicas > 0 {
+		replicas = fmt.Sprint(deployment.Replicas)
+	}
+	if len(deployment.Children) > 0 {
+		fmt.Fprintf(writer, "  %s%s\t%s\t%s\t\t\t%s\t\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Status)
 		for _, child := range deployment.Children {
-			printDeploymentRow(writer, child, prefix+"\\_", false)
+			printDeploymentRow(writer, child, prefix+"\\_")
 		}
 		return
 	}
-	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
+	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
+	for _, child := range deployment.Children {
+		printDeploymentRow(writer, child, prefix+"\\_")
+	}
 }
 
 func yesOrNo(b bool) string {

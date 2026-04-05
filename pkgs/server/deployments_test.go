@@ -8,6 +8,7 @@ import (
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/swarm"
 )
 
 func compareLabels(t *testing.T, expected, actual map[string]string) {
@@ -341,6 +342,216 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 }
 
+func TestCollectManagedComposeServicesAllowsPerServicePort(t *testing.T) {
+	project := composeProject{
+		Services: map[string]composeProjectService{
+			"api": {
+				Jig: &jigtypes.DeploymentConfig{
+					Name:   "api",
+					Domain: "api.example.com",
+					Port:   5174,
+				},
+			},
+		},
+	}
+
+	managed, err := collectManagedComposeServices(project, jigtypes.DeploymentConfig{
+		Name:        "stack",
+		ComposeFile: "docker-compose.yaml",
+	}, nil)
+	if err != nil {
+		t.Fatalf("collectManagedComposeServices: %v", err)
+	}
+	if len(managed) != 1 {
+		t.Fatalf("expected 1 managed service, got %d", len(managed))
+	}
+	if managed[0].Config.Port != 5174 {
+		t.Fatalf("expected managed service port to be preserved, got %#v", managed[0])
+	}
+}
+
+func TestMakeSwarmStackOverride(t *testing.T) {
+	override, err := makeSwarmStackOverride([]composeManagedService{
+		{
+			StackName:   "stack",
+			ServiceName: "web",
+			DisplayName: "frontend",
+			Config: jigtypes.DeploymentConfig{
+				Name:          "stack-frontend",
+				Hostname:      "frontend",
+				ComposeFile:   "docker-compose.yaml",
+				RestartPolicy: "on-failure:3",
+				Domain:        "app.example.com",
+				Placement: jigtypes.DeploymentPlacement{
+					RequiredNodeLabels: map[string]string{"disk": "ssd"},
+				},
+			},
+			Envs: map[string]string{
+				"API_TOKEN": "secret",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("makeSwarmStackOverride: %v", err)
+	}
+
+	expectedSnippets := []string{
+		`services:`,
+		`web:`,
+		`hostname: frontend`,
+		`API_TOKEN: secret`,
+		`networks:`,
+		`aliases:`,
+		`- frontend`,
+		`restart_policy:`,
+		`condition: on-failure`,
+		`max_attempts: 3`,
+		`constraints:`,
+		`- node.labels.disk == ssd`,
+		`jig.deployment-kind: swarm-stack-service`,
+		`jig.stack: stack`,
+		`jig.service: frontend`,
+		"traefik.http.routers.stack-frontend-secure.rule: Host(`app.example.com`)",
+		`networks:`,
+		`jig:`,
+		`external: true`,
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(override, snippet) {
+			t.Fatalf("expected override to contain %q, got:\n%s", snippet, override)
+		}
+	}
+}
+
+func TestMakeSwarmBuildOverride(t *testing.T) {
+	override, images, err := makeSwarmBuildOverride(composeProject{
+		Services: map[string]composeProjectService{
+			"frontend": {Build: map[string]any{"context": "."}},
+			"api":      {Image: "ghcr.io/example/api:latest"},
+			"worker":   {Build: "./worker"},
+		},
+	}, "ringge", "127.0.0.1:5000")
+	if err != nil {
+		t.Fatalf("makeSwarmBuildOverride: %v", err)
+	}
+	if len(images) != 2 {
+		t.Fatalf("expected 2 built images, got %#v", images)
+	}
+	for _, expected := range []string{
+		"127.0.0.1:5000/jig/ringge/frontend:",
+		"127.0.0.1:5000/jig/ringge/worker:",
+		"frontend:",
+		"worker:",
+	} {
+		if !strings.Contains(override, expected) {
+			t.Fatalf("expected override to contain %q, got:\n%s", expected, override)
+		}
+	}
+	if strings.Contains(override, "ghcr.io/example/api:latest") {
+		t.Fatalf("did not expect non-build image to be overridden, got:\n%s", override)
+	}
+}
+
+func TestMakeSwarmConstraints(t *testing.T) {
+	config := jigtypes.DeploymentConfig{
+		Placement: jigtypes.DeploymentPlacement{
+			RequiredNodeLabels: map[string]string{
+				"disk": "ssd",
+				"zone": "eu-1",
+			},
+		},
+	}
+
+	constraints, err := makeSwarmConstraints(config)
+	if err != nil {
+		t.Fatalf("makeSwarmConstraints: %v", err)
+	}
+	expected := []string{
+		"node.labels.disk == ssd",
+		"node.labels.zone == eu-1",
+	}
+	if strings.Join(constraints, "|") != strings.Join(expected, "|") {
+		t.Fatalf("expected %v, got %v", expected, constraints)
+	}
+}
+
+func TestValidateSwarmConfig(t *testing.T) {
+	t.Run("bind mounts require placement", func(t *testing.T) {
+		err := validateSwarmConfig(jigtypes.DeploymentConfig{
+			Name:    "app",
+			Volumes: []string{"/srv/data:/data"},
+		})
+		if err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+
+	t.Run("bind mounts with placement pass", func(t *testing.T) {
+		err := validateSwarmConfig(jigtypes.DeploymentConfig{
+			Name:    "app",
+			Volumes: []string{"/srv/data:/data"},
+			Placement: jigtypes.DeploymentPlacement{
+				RequiredNodeLabels: map[string]string{"disk": "ssd"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("validateSwarmConfig: %v", err)
+		}
+	})
+}
+
+func TestMakeSwarmRestartPolicy(t *testing.T) {
+	policy, err := makeSwarmRestartPolicy(jigtypes.DeploymentConfig{RestartPolicy: "on-failure:3"})
+	if err != nil {
+		t.Fatalf("makeSwarmRestartPolicy: %v", err)
+	}
+	if policy == nil {
+		t.Fatal("expected restart policy")
+	}
+	if policy.Condition != swarm.RestartPolicyConditionOnFailure {
+		t.Fatalf("expected on-failure condition, got %q", policy.Condition)
+	}
+	if policy.MaxAttempts == nil || *policy.MaxAttempts != 3 {
+		t.Fatalf("expected max attempts 3, got %#v", policy.MaxAttempts)
+	}
+}
+
+func TestMakeSwarmServiceSpec(t *testing.T) {
+	spec, err := makeSwarmServiceSpec(jigtypes.DeploymentConfig{
+		Name:          "app",
+		Port:          8080,
+		Domain:        "app.example.com",
+		RestartPolicy: "on-failure:4",
+		Volumes:       []string{"/srv/data:/data"},
+		Placement: jigtypes.DeploymentPlacement{
+			RequiredNodeLabels: map[string]string{"disk": "ssd"},
+		},
+	}, "app:swarm-1", []string{"APP_ENV=prod"})
+	if err != nil {
+		t.Fatalf("makeSwarmServiceSpec: %v", err)
+	}
+
+	if spec.TaskTemplate.ContainerSpec == nil {
+		t.Fatal("expected container spec")
+	}
+	if spec.TaskTemplate.ContainerSpec.Image != "app:swarm-1" {
+		t.Fatalf("unexpected image %q", spec.TaskTemplate.ContainerSpec.Image)
+	}
+	if got := spec.Annotations.Labels["traefik.http.routers.app.rule"]; got != "Host(`app.example.com`)" {
+		t.Fatalf("unexpected router rule %q", got)
+	}
+	if got := spec.Annotations.Labels["traefik.http.services.app.loadbalancer.server.port"]; got != "8080" {
+		t.Fatalf("unexpected load balancer port %q", got)
+	}
+	if len(spec.TaskTemplate.Placement.Constraints) != 1 || spec.TaskTemplate.Placement.Constraints[0] != "node.labels.disk == ssd" {
+		t.Fatalf("unexpected constraints %#v", spec.TaskTemplate.Placement.Constraints)
+	}
+	if spec.TaskTemplate.RestartPolicy == nil || spec.TaskTemplate.RestartPolicy.MaxAttempts == nil || *spec.TaskTemplate.RestartPolicy.MaxAttempts != 4 {
+		t.Fatalf("unexpected restart policy %#v", spec.TaskTemplate.RestartPolicy)
+	}
+}
+
 func TestBuildDeploymentsGroupsComposeStack(t *testing.T) {
 	containers := []types.Container{
 		{
@@ -401,17 +612,136 @@ func TestBuildDeploymentsGroupsComposeStack(t *testing.T) {
 	if stack.Name != "stack" {
 		t.Fatalf("expected stack deployment in %#v", deployments)
 	}
+	if stack.Kind != "stack" {
+		t.Fatalf("expected generic stack kind, got %#v", stack)
+	}
 	if stack.Status != "unhealthy" {
 		t.Fatalf("expected stack health to reflect the worst child, got %#v", stack)
 	}
 	if len(stack.Children) != 2 {
 		t.Fatalf("expected two child services, got %#v", stack.Children)
 	}
+	if stack.Children[0].Kind != "stack-service" || stack.Children[1].Kind != "stack-service" {
+		t.Fatalf("expected generic stack-service kinds in %#v", stack.Children)
+	}
 	if stack.Children[0].Name != "api" && stack.Children[1].Name != "api" {
 		t.Fatalf("expected api child in %#v", stack.Children)
 	}
 	if stack.Children[0].Status != "healthy" && stack.Children[1].Status != "healthy" {
 		t.Fatalf("expected one healthy child in %#v", stack.Children)
+	}
+
+	var solo jigtypes.Deployment
+	for _, deployment := range deployments {
+		if deployment.Name == "solo" {
+			solo = deployment
+		}
+	}
+	if solo.Name != "solo" {
+		t.Fatalf("expected solo deployment in %#v", deployments)
+	}
+	if solo.Kind != "service" {
+		t.Fatalf("expected standalone single to render as service, got %#v", solo)
+	}
+	if solo.Rule != "Host(`solo.example.com`)" {
+		t.Fatalf("expected solo rule to be preserved, got %#v", solo)
+	}
+	if solo.Status != "healthy" {
+		t.Fatalf("expected solo to be healthy, got %#v", solo)
+	}
+	if solo.HasRollback {
+		t.Fatalf("did not expect solo to have rollback, got %#v", solo)
+	}
+}
+
+func TestBuildSwarmDeploymentsGroupsStacks(t *testing.T) {
+	replicas := uint64(2)
+	services := []swarm.Service{
+		{
+			ID: "svc-single",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":                      "api",
+						"jig.deployment-kind":           "swarm",
+						"traefik.http.routers.api.rule": "Host(`api.example.com`)",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: &replicas},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 2, DesiredTasks: 2},
+		},
+		{
+			ID: "svc-stack-web",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":                            "stack-web",
+						"jig.deployment-kind":                 "swarm-stack-service",
+						"jig.stack":                           "stack",
+						"jig.service":                         "web",
+						"traefik.http.routers.stack-web.rule": "Host(`app.example.com`)",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: ptr(uint64(1))},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 1, DesiredTasks: 1},
+		},
+		{
+			ID: "svc-stack-worker",
+			Spec: swarm.ServiceSpec{
+				Annotations: swarm.Annotations{
+					Labels: map[string]string{
+						"jig.name":            "stack-worker",
+						"jig.deployment-kind": "swarm-stack-service",
+						"jig.stack":           "stack",
+						"jig.service":         "worker",
+					},
+				},
+				Mode: swarm.ServiceMode{
+					Replicated: &swarm.ReplicatedService{Replicas: ptr(uint64(1))},
+				},
+			},
+			ServiceStatus: &swarm.ServiceStatus{RunningTasks: 0, DesiredTasks: 1},
+		},
+	}
+
+	deployments := buildSwarmDeployments(services)
+	if len(deployments) != 2 {
+		t.Fatalf("expected 2 top-level deployments, got %#v", deployments)
+	}
+	if deployments[0].Name != "api" || deployments[0].Kind != "service" {
+		t.Fatalf("expected singular service first, got %#v", deployments[0])
+	}
+	if deployments[0].Rule != "Host(`api.example.com`)" {
+		t.Fatalf("expected singular swarm rule to be preserved, got %#v", deployments[0])
+	}
+	if deployments[0].Replicas != 2 {
+		t.Fatalf("expected singular swarm replicas to be shown, got %#v", deployments[0])
+	}
+	if deployments[0].Status != "healthy" {
+		t.Fatalf("expected singular swarm service to be healthy, got %#v", deployments[0])
+	}
+	if deployments[1].Name != "stack" || deployments[1].Kind != "stack" {
+		t.Fatalf("expected stack parent, got %#v", deployments[1])
+	}
+	if deployments[1].Status != "unhealthy" {
+		t.Fatalf("expected unhealthy stack when one child is down, got %#v", deployments[1])
+	}
+	if len(deployments[1].Children) != 2 {
+		t.Fatalf("expected 2 stack children, got %#v", deployments[1].Children)
+	}
+	for _, child := range deployments[1].Children {
+		if child.Kind != "stack-service" {
+			t.Fatalf("expected stack-service kind, got %#v", child)
+		}
+		if child.ParentName != "stack" {
+			t.Fatalf("expected parent name stack, got %#v", child)
+		}
 	}
 }
 

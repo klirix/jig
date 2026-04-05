@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -130,6 +131,7 @@ func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
 
 	flat := jigtypes.Deployment{
 		Name:        "babyl",
+		Kind:        "service",
 		Rule:        "Host(`babyl.example.test`)",
 		Status:      "healthy",
 		Lifetime:    "Up 2 minutes",
@@ -137,15 +139,18 @@ func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
 	}
 	stack := jigtypes.Deployment{
 		Name:   "my-stack",
+		Kind:   "stack",
 		Status: "healthy",
 		Children: []jigtypes.Deployment{
 			{
+				Kind:     "stack-service",
 				Name:     "api",
 				Rule:     "Host(`api.example.test`)",
 				Status:   "healthy",
 				Lifetime: "Up 1 minute",
 			},
 			{
+				Kind:     "stack-service",
 				Name:     "db",
 				Status:   "unhealthy",
 				Lifetime: "Exited (1)",
@@ -153,22 +158,69 @@ func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
 		},
 	}
 
-	printDeploymentRow(writer, flat, "", false)
-	printDeploymentRow(writer, stack, "", true)
+	printDeploymentRow(writer, flat, "")
+	printDeploymentRow(writer, stack, "")
 	writer.Flush()
 
 	output := buffer.String()
 	for _, expected := range []string{
 		"babyl",
+		"service",
 		"Host(`babyl.example.test`)",
 		"Up 2 minutes",
 		"yes",
 		"my-stack",
+		"stack",
 		"\\_api",
 		"\\_db",
 	} {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
 		}
+	}
+}
+
+func TestPrintDeploymentRowSingleSwarmService(t *testing.T) {
+	buffer := &bytes.Buffer{}
+	writer := tabwriter.NewWriter(buffer, 0, 8, 1, '\t', tabwriter.AlignRight)
+
+	deployment := jigtypes.Deployment{
+		Name:        "api",
+		Kind:        "service",
+		Replicas:    3,
+		Rule:        "Host(`api.example.test`)",
+		Status:      "healthy",
+		Lifetime:    "rolling update complete",
+		HasRollback: true,
+	}
+
+	printDeploymentRow(writer, deployment, "")
+	writer.Flush()
+
+	output := buffer.String()
+	for _, expected := range []string{
+		"api",
+		"service",
+		"3",
+		"Host(`api.example.test`)",
+		"rolling update complete",
+		"healthy",
+		"yes",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
+		}
+	}
+}
+
+func TestPrintWorkerBootstrapCommand(t *testing.T) {
+	joinToken := jigtypes.ClusterJoinTokenResponse{
+		Token:          "abc123",
+		ManagerAddress: "10.0.0.2:2377",
+	}
+
+	cmd := fmt.Sprintf("curl -fsSL https://deploywithjig.askh.at/worker.sh | JIG_SWARM_JOIN_TOKEN=%q JIG_SWARM_MANAGER_ADDR=%q bash\n", joinToken.Token, joinToken.ManagerAddress)
+	if !strings.Contains(cmd, "JIG_SWARM_JOIN_TOKEN=\"abc123\"") || !strings.Contains(cmd, "JIG_SWARM_MANAGER_ADDR=\"10.0.0.2:2377\"") {
+		t.Fatalf("unexpected bootstrap command: %s", cmd)
 	}
 }
