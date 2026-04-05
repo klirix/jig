@@ -883,6 +883,8 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 			for _, childName := range childNames {
 				childGroup := stackGroup.services[childName]
 				child := deploymentFromContainer(childGroup.container, childName, false)
+				child.Kind = "compose-service"
+				child.ParentName = stackGroup.stackName
 				children = append(children, child)
 				if child.Status != "healthy" {
 					healthy = false
@@ -891,6 +893,7 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 
 			parent := jigtypes.Deployment{
 				Name:     stackGroup.stackName,
+				Kind:     "compose",
 				Status:   "healthy",
 				Children: children,
 			}
@@ -920,6 +923,7 @@ func deploymentFromContainer(container types.Container, name string, hasRollback
 	return jigtypes.Deployment{
 		ID:          container.ID,
 		Name:        name,
+		Kind:        "service",
 		Rule:        container.Labels["traefik.http.routers."+container.Labels["jig.name"]+`.rule`],
 		Status:      deploymentHealth(container.State),
 		Lifetime:    container.Status,
@@ -1072,13 +1076,25 @@ func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 		deployments = append(deployments, jigtypes.Deployment{
 			ID:          service.ID,
 			Name:        name,
+			Kind:        "swarm-service",
 			Rule:        service.Spec.Labels["traefik.http.routers."+name+`-secure.rule`],
 			Status:      status,
 			Lifetime:    lifetime,
 			HasRollback: service.PreviousSpec != nil,
+			Replicas:    swarmServiceDesiredReplicas(service),
 		})
 	}
 	return deployments, nil
+}
+
+func swarmServiceDesiredReplicas(service swarm.Service) int {
+	if service.ServiceStatus != nil {
+		return int(service.ServiceStatus.DesiredTasks)
+	}
+	if service.Spec.Mode.Replicated != nil && service.Spec.Mode.Replicated.Replicas != nil {
+		return int(*service.Spec.Mode.Replicated.Replicas)
+	}
+	return 0
 }
 
 func findSwarmServiceByDeploymentName(cli *client.Client, name string) (*swarm.Service, error) {
@@ -1102,6 +1118,80 @@ func removeDeploymentServices(cli *client.Client, name string) (bool, error) {
 		return false, err
 	}
 	return true, cli.ServiceRemove(context.Background(), service.ID)
+}
+
+func scaleSwarmDeployment(cli *client.Client, name string, replicas uint64) error {
+	service, err := findSwarmServiceByDeploymentName(cli, name)
+	if err != nil {
+		return err
+	}
+	if service == nil {
+		return errors.New("swarm deployment not found")
+	}
+
+	var config jigtypes.DeploymentConfig
+	if configString := service.Spec.Labels["jig.config"]; configString != "" {
+		if err := json.Unmarshal([]byte(configString), &config); err != nil {
+			return fmt.Errorf("invalid deployment config on service: %w", err)
+		}
+	}
+	if len(config.Placement.RequiredNodeLabels) > 0 {
+		return errors.New("Scaling is not supported for deployments with placement.requiredNodeLabels")
+	}
+
+	inspected, _, err := cli.ServiceInspectWithRaw(context.Background(), service.ID, types.ServiceInspectOptions{})
+	if err != nil {
+		return err
+	}
+	if inspected.Spec.Mode.Replicated == nil {
+		return errors.New("Scaling is only supported for replicated services")
+	}
+
+	spec := inspected.Spec
+	spec.Mode.Replicated.Replicas = &replicas
+	_, err = cli.ServiceUpdate(context.Background(), inspected.ID, inspected.Version, spec, types.ServiceUpdateOptions{})
+	return err
+}
+
+func swarmNodeStats(cli *client.Client) ([]jigtypes.SwarmNodeStats, error) {
+	nodes, err := cli.NodeList(context.Background(), types.NodeListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := cli.TaskList(context.Background(), types.TaskListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	taskCounts := map[string]struct{ running, total int }{}
+	for _, task := range tasks {
+		counts := taskCounts[task.NodeID]
+		counts.total++
+		if task.Status.State == swarm.TaskStateRunning {
+			counts.running++
+		}
+		taskCounts[task.NodeID] = counts
+	}
+
+	result := make([]jigtypes.SwarmNodeStats, 0, len(nodes))
+	for _, node := range nodes {
+		counts := taskCounts[node.ID]
+		result = append(result, jigtypes.SwarmNodeStats{
+			Name:         node.Description.Hostname,
+			Role:         string(node.Spec.Role),
+			Availability: string(node.Spec.Availability),
+			State:        string(node.Status.State),
+			Address:      node.Status.Addr,
+			Cpus:         node.Description.Resources.NanoCPUs / 1_000_000_000,
+			MemoryBytes:  node.Description.Resources.MemoryBytes,
+			RunningTasks: counts.running,
+			TotalTasks:   counts.total,
+		})
+	}
+	slices.SortFunc(result, func(a, b jigtypes.SwarmNodeStats) int {
+		return strings.Compare(a.Name, b.Name)
+	})
+	return result, nil
 }
 
 func makeSwarmEndpointSpec(config jigtypes.DeploymentConfig) (*swarm.EndpointSpec, error) {
@@ -1698,17 +1788,53 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 	}
 }
 
+func (dr *DeploymentsRouter) scaleDeployment(w http.ResponseWriter, r *http.Request) {
+	if !dr.usesSwarm() {
+		http.Error(w, "Scaling is only supported on swarm-backed instances", http.StatusBadRequest)
+		return
+	}
+
+	name := r.PathValue("name")
+	var request jigtypes.DeploymentScaleRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "Invalid scale request", http.StatusBadRequest)
+		return
+	}
+	if request.Replicas < 1 {
+		http.Error(w, "Replicas must be at least 1", http.StatusBadRequest)
+		return
+	}
+
+	service, err := findSwarmServiceByDeploymentName(dr.cli, name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if service == nil {
+		http.Error(w, "Scaling is only supported for singular swarm service deployments", http.StatusBadRequest)
+		return
+	}
+
+	if err := scaleSwarmDeployment(dr.cli, name, uint64(request.Replicas)); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.Request) {
 	if dr.usesSwarm() {
-		swarmDeployments, err := listSwarmDeployments(dr.cli)
+		nodes, err := swarmNodeStats(dr.cli)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if len(swarmDeployments) > 0 {
-			http.Error(w, "Stats are not available for swarm deployments", http.StatusNotImplemented)
-			return
-		}
+		respondWithJson(w, http.StatusOK, jigtypes.DeploymentStatsResponse{
+			Mode:  "swarm",
+			Nodes: nodes,
+		})
+		return
 	}
 
 	containers, err := dr.cli.ContainerList(context.Background(), container.ListOptions{
@@ -1760,15 +1886,10 @@ func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.R
 		})
 	}
 
-	statsJson, err := json.Marshal(allStats)
-	if err != nil {
-		log.Print("Failed to marshal stats")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(statsJson)
-
+	respondWithJson(w, http.StatusOK, jigtypes.DeploymentStatsResponse{
+		Mode:  "containers",
+		Stats: allStats,
+	})
 }
 
 func (dr DeploymentsRouter) Router() (r chi.Router) {
@@ -1780,6 +1901,8 @@ func (dr DeploymentsRouter) Router() (r chi.Router) {
 	r.Delete("/{name}", dr.deleteDeploy)
 
 	r.Post("/{name}/rollback", dr.rollbackDeployment)
+
+	r.Post("/{name}/scale", dr.scaleDeployment)
 
 	r.Get("/{name}/logs", dr.getDeploymentLogs)
 

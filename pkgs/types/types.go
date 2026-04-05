@@ -38,10 +38,13 @@ type RateLimitMiddleware struct {
 type Deployment struct {
 	ID          string       `json:"id"`
 	Name        string       `json:"name"`
+	Kind        string       `json:"kind,omitempty"`
+	ParentName  string       `json:"parentName,omitempty"`
 	Rule        string       `json:"rule"`
 	Status      string       `json:"status"`
 	Lifetime    string       `json:"lifetime"`
 	HasRollback bool         `json:"hasRollback"`
+	Replicas    int          `json:"replicas,omitempty"`
 	Children    []Deployment `json:"children,omitempty"`
 }
 
@@ -63,6 +66,28 @@ type Stats struct {
 	CpuPercentage    float64 `json:"cpuPercentage"`
 	MemoryPercentage float64 `json:"memoryPercentage"`
 	MemoryBytes      float64 `json:"memoryBytes"`
+}
+
+type SwarmNodeStats struct {
+	Name         string `json:"name"`
+	Role         string `json:"role"`
+	Availability string `json:"availability"`
+	State        string `json:"state"`
+	Address      string `json:"address"`
+	Cpus         int64  `json:"cpus"`
+	MemoryBytes  int64  `json:"memoryBytes"`
+	RunningTasks int    `json:"runningTasks"`
+	TotalTasks   int    `json:"totalTasks"`
+}
+
+type DeploymentStatsResponse struct {
+	Mode  string           `json:"mode"`
+	Stats []Stats          `json:"stats,omitempty"`
+	Nodes []SwarmNodeStats `json:"nodes,omitempty"`
+}
+
+type DeploymentScaleRequest struct {
+	Replicas int `json:"replicas"`
 }
 
 type TokenListResponse struct {

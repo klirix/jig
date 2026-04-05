@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -416,6 +417,47 @@ func main() {
 						},
 					},
 					{
+						Name:  "scale",
+						Usage: "Scale a singular swarm deployment",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Args:      true,
+						ArgsUsage: " name replicas",
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							name := ctx.Args().Get(0)
+							replicasString := ctx.Args().Get(1)
+							if name == "" || replicasString == "" {
+								log.Fatal("Name and replicas are required")
+							}
+							replicas, err := strconv.Atoi(replicasString)
+							if err != nil {
+								log.Fatal("Replicas must be a number")
+							}
+							requestBody, err := json.Marshal(jigtypes.DeploymentScaleRequest{Replicas: replicas})
+							if err != nil {
+								log.Fatal("Error marshaling scale request: ", err)
+							}
+							req, _ := createRequest("POST", "/deployments/"+name+"/scale")
+							req.Header.Set("Content-Type", "application/json")
+							req.Body = io.NopCloser(bytes.NewReader(requestBody))
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusNoContent {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error scaling deployment: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+							fmt.Printf("Scaled %s to %d replicas\n", name, replicas)
+							return nil
+						},
+					},
+					{
 						Name:  "stats",
 						Usage: "Get resource usage stats",
 						Flags: []cli.Flag{
@@ -439,15 +481,31 @@ func main() {
 							if err != nil {
 								log.Fatal("Error reading request: ", err)
 							}
-							var stats []jigtypes.Stats
-							if err := json.Unmarshal(body, &stats); err != nil {
+							var statsResponse jigtypes.DeploymentStatsResponse
+							if err := json.Unmarshal(body, &statsResponse); err != nil {
 								log.Fatal("Error unmarshalling response: ", err)
 							}
 
 							writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, '\t', tabwriter.AlignRight)
-							fmt.Fprintln(writer, "name\tmemory\tcpu")
-							for _, stat := range stats {
-								fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%% \n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
+							if statsResponse.Mode == "swarm" {
+								fmt.Fprintln(writer, "node\trole\tavailability\tstate\tcpus\tmemory\trunning tasks\ttotal tasks")
+								for _, node := range statsResponse.Nodes {
+									fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%d\t%.2f GB\t%d\t%d\n",
+										node.Name,
+										node.Role,
+										node.Availability,
+										node.State,
+										node.Cpus,
+										float64(node.MemoryBytes)/(1024*1024*1024),
+										node.RunningTasks,
+										node.TotalTasks,
+									)
+								}
+							} else {
+								fmt.Fprintln(writer, "name\tmemory\tcpu")
+								for _, stat := range statsResponse.Stats {
+									fmt.Fprintf(writer, "%s\t%.2f MB (%.2f%%)\t%.2f%% \n", stat.Name, stat.MemoryBytes, stat.MemoryPercentage, stat.CpuPercentage)
+								}
 							}
 							writer.Flush()
 							return nil
@@ -687,7 +745,7 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\tstatus")
+	fmt.Fprintln(writer, "  name\tkind\treplicas\tstatus")
 	for _, deployment := range deployments {
 		printDeploymentRow(writer, deployment, "")
 	}
@@ -696,7 +754,11 @@ func listDeployments(ctx *cli.Context) error {
 }
 
 func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string) {
-	fmt.Fprintf(writer, "  %s%s\t%s\n", prefix, deployment.Name, deployment.Status)
+	replicas := ""
+	if deployment.Replicas > 0 {
+		replicas = fmt.Sprint(deployment.Replicas)
+	}
+	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Kind, replicas, deployment.Status)
 	for _, child := range deployment.Children {
 		printDeploymentRow(writer, child, prefix+"\\_")
 	}
