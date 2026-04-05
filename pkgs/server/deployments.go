@@ -342,7 +342,9 @@ type composeProject struct {
 }
 
 type composeProjectService struct {
-	Jig *jigtypes.DeploymentConfig `yaml:"x-jig"`
+	Image string                     `yaml:"image"`
+	Build any                        `yaml:"build"`
+	Jig   *jigtypes.DeploymentConfig `yaml:"x-jig"`
 }
 
 type composeManagedService struct {
@@ -412,9 +414,6 @@ func mergeDeploymentConfig(base, override jigtypes.DeploymentConfig, defaultName
 func validateComposeManagedConfig(config jigtypes.DeploymentConfig) error {
 	if len(config.Volumes) > 0 {
 		return errors.New("Compose deployments must configure volumes in the compose file")
-	}
-	if config.Port != 0 {
-		return errors.New("Compose deployments must configure ports in the compose file")
 	}
 	if len(config.ExposePorts) > 0 {
 		return errors.New("Compose deployments must configure published ports in the compose file")
@@ -716,6 +715,43 @@ func makeSwarmStackOverride(managedServices []composeManagedService) (string, er
 	return string(output), nil
 }
 
+func makeSwarmBuildOverride(project composeProject, stackName, registryHost string) (string, []string, error) {
+	servicesConfig := map[string]any{}
+	images := make([]string, 0, len(project.Services))
+
+	serviceNames := make([]string, 0, len(project.Services))
+	for serviceName := range project.Services {
+		serviceNames = append(serviceNames, serviceName)
+	}
+	slices.Sort(serviceNames)
+
+	deployTag := fmt.Sprintf("%d", time.Now().UnixNano())
+	for _, serviceName := range serviceNames {
+		service := project.Services[serviceName]
+		if service.Build == nil {
+			continue
+		}
+
+		imageRef := fmt.Sprintf("%s/jig/%s/%s:%s", registryHost, stackName, serviceName, deployTag)
+		servicesConfig[serviceName] = map[string]any{
+			"image": imageRef,
+		}
+		images = append(images, imageRef)
+	}
+
+	if len(servicesConfig) == 0 {
+		return "", nil, nil
+	}
+
+	output, err := yaml.Marshal(map[string]any{
+		"services": servicesConfig,
+	})
+	if err != nil {
+		return "", nil, err
+	}
+	return string(output), images, nil
+}
+
 func pickComposePrimaryService(config jigtypes.DeploymentConfig, services []string) (string, error) {
 	if config.ComposeService != "" {
 		if slices.Contains(services, config.ComposeService) {
@@ -840,6 +876,32 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 	}
 
 	if d.usesSwarm() {
+		buildOverrideContents, builtImages, err := makeSwarmBuildOverride(project, config.Name, swarmRegistryHost())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		buildOverridePath := ""
+		if buildOverrideContents != "" {
+			buildOverridePath = filepath.Join(tempDir, ".jig.stack.build.yaml")
+			if err := os.WriteFile(buildOverridePath, []byte(buildOverrideContents), 0644); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			buildArgs := []string{"-p", config.Name, "-f", config.ComposeFile, "-f", filepath.Base(buildOverridePath), "build"}
+			if _, err := runComposeCommand(tempDir, buildArgs...); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			for _, imageRef := range builtImages {
+				if _, err := runDockerCommand(tempDir, "push", imageRef); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+
 		overridePath := filepath.Join(tempDir, ".jig.stack.override.yaml")
 		overrideContents, err := makeSwarmStackOverride(managedServices)
 		if err != nil {
@@ -851,7 +913,13 @@ func (d *DeploymentsRouter) deployCompose(w http.ResponseWriter, r *http.Request
 			return
 		}
 
-		output, err := runDockerCommand(tempDir, "stack", "deploy", "-c", config.ComposeFile, "-c", filepath.Base(overridePath), config.Name)
+		stackArgs := []string{"stack", "deploy", "-c", config.ComposeFile}
+		if buildOverridePath != "" {
+			stackArgs = append(stackArgs, "-c", filepath.Base(buildOverridePath))
+		}
+		stackArgs = append(stackArgs, "-c", filepath.Base(overridePath), config.Name)
+
+		output, err := runDockerCommand(tempDir, stackArgs...)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

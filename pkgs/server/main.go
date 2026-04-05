@@ -29,6 +29,11 @@ import (
 )
 
 const defaultSwarmIngressLabel = "jig.ingress=true"
+const defaultSwarmRegistryHost = "jig-registry:5000"
+
+func swarmRegistryHost() string {
+	return defaultSwarmRegistryHost
+}
 
 func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 	if backend == deploymentBackendSwarm {
@@ -164,10 +169,11 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 		"--log.level=DEBUG",
 		"--entrypoints.web.address=:80",
 		"--entrypoints.websecure.address=:443",
-		"--providers.swarm=true",
-		"--providers.swarm.endpoint=unix:///var/run/docker.sock",
-		"--providers.swarm.exposedbydefault=false",
-		"--providers.swarm.network=jig",
+		"--providers.docker=true",
+		"--providers.docker.endpoint=unix:///var/run/docker.sock",
+		"--providers.docker.exposedbydefault=false",
+		"--providers.docker.network=jig",
+		"--providers.docker.swarmmode=true",
 		"--certificatesresolvers.defaultresolver=true",
 		"--certificatesresolvers.defaultresolver.acme.email=" + os.Getenv("JIG_SSL_EMAIL"),
 		"--certificatesresolvers.defaultresolver.acme.storage=/var/jig/acme.json",
@@ -213,6 +219,48 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 443, PublishedPort: 443, PublishMode: swarm.PortConfigPublishModeIngress},
 				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 8080, PublishedPort: 8080, PublishMode: swarm.PortConfigPublishModeIngress},
 			},
+		},
+	}, types.ServiceCreateOptions{})
+	return err
+}
+
+func ensureSwarmRegistryRunning(cli *client.Client) error {
+	if err := os.MkdirAll("/var/jig/registry", 0755); err != nil {
+		return err
+	}
+
+	services, err := cli.ServiceList(context.Background(), types.ServiceListOptions{
+		Filters: filters.NewArgs(filters.Arg("name", "jig-registry")),
+	})
+	if err != nil {
+		return err
+	}
+	if len(services) > 0 {
+		return nil
+	}
+
+	replicas := uint64(1)
+	_, err = cli.ServiceCreate(context.Background(), swarm.ServiceSpec{
+		Annotations: swarm.Annotations{
+			Name: "jig-registry",
+		},
+		TaskTemplate: swarm.TaskSpec{
+			ContainerSpec: &swarm.ContainerSpec{
+				Image: "registry:2",
+				Mounts: []mount.Mount{
+					{Type: mount.TypeBind, Source: "/var/jig/registry", Target: "/var/lib/registry"},
+				},
+			},
+			Networks: []swarm.NetworkAttachmentConfig{{Target: "jig"}},
+			Placement: &swarm.Placement{
+				Constraints: []string{"node.role == manager"},
+			},
+			RestartPolicy: &swarm.RestartPolicy{
+				Condition: swarm.RestartPolicyConditionAny,
+			},
+		},
+		Mode: swarm.ServiceMode{
+			Replicated: &swarm.ReplicatedService{Replicas: &replicas},
 		},
 	}, types.ServiceCreateOptions{})
 	return err
@@ -417,6 +465,14 @@ func serve() {
 		panic(err)
 	}
 	log.Println("Traefik is running!")
+
+	if backend == deploymentBackendSwarm {
+		if err := ensureSwarmRegistryRunning(cli); err != nil {
+			log.Println("Failed to ensure swarm registry is running")
+			panic(err)
+		}
+		log.Printf("Swarm registry is running at %s", swarmRegistryHost())
+	}
 
 	db, err := createOrOpenDb("/var/jig/secrets.db")
 	if err != nil {

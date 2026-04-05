@@ -342,6 +342,34 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 }
 
+func TestCollectManagedComposeServicesAllowsPerServicePort(t *testing.T) {
+	project := composeProject{
+		Services: map[string]composeProjectService{
+			"api": {
+				Jig: &jigtypes.DeploymentConfig{
+					Name:   "api",
+					Domain: "api.example.com",
+					Port:   5174,
+				},
+			},
+		},
+	}
+
+	managed, err := collectManagedComposeServices(project, jigtypes.DeploymentConfig{
+		Name:        "stack",
+		ComposeFile: "docker-compose.yaml",
+	}, nil)
+	if err != nil {
+		t.Fatalf("collectManagedComposeServices: %v", err)
+	}
+	if len(managed) != 1 {
+		t.Fatalf("expected 1 managed service, got %d", len(managed))
+	}
+	if managed[0].Config.Port != 5174 {
+		t.Fatalf("expected managed service port to be preserved, got %#v", managed[0])
+	}
+}
+
 func TestMakeSwarmStackOverride(t *testing.T) {
 	override, err := makeSwarmStackOverride([]composeManagedService{
 		{
@@ -393,6 +421,35 @@ func TestMakeSwarmStackOverride(t *testing.T) {
 		if !strings.Contains(override, snippet) {
 			t.Fatalf("expected override to contain %q, got:\n%s", snippet, override)
 		}
+	}
+}
+
+func TestMakeSwarmBuildOverride(t *testing.T) {
+	override, images, err := makeSwarmBuildOverride(composeProject{
+		Services: map[string]composeProjectService{
+			"frontend": {Build: map[string]any{"context": "."}},
+			"api":      {Image: "ghcr.io/example/api:latest"},
+			"worker":   {Build: "./worker"},
+		},
+	}, "ringge", "registry.ringge.me")
+	if err != nil {
+		t.Fatalf("makeSwarmBuildOverride: %v", err)
+	}
+	if len(images) != 2 {
+		t.Fatalf("expected 2 built images, got %#v", images)
+	}
+	for _, expected := range []string{
+		"registry.ringge.me/jig/ringge/frontend:",
+		"registry.ringge.me/jig/ringge/worker:",
+		"frontend:",
+		"worker:",
+	} {
+		if !strings.Contains(override, expected) {
+			t.Fatalf("expected override to contain %q, got:\n%s", expected, override)
+		}
+	}
+	if strings.Contains(override, "ghcr.io/example/api:latest") {
+		t.Fatalf("did not expect non-build image to be overridden, got:\n%s", override)
 	}
 }
 
