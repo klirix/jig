@@ -69,11 +69,13 @@ install_swarm() {
     askhatsaiapov/jig:latest
 
   echo
-  echo "Detected Docker Swarm manager, deployed Jig as a service."
-  echo "Marked the current manager node with jig.ingress=true for Traefik placement."
-  echo "Your jig instance should be available on: https://$JIG_DOMAIN"
-  echo "Tail logs with: docker service logs -f jig"
-  docker service logs jig --tail 20 || true
+echo "Detected Docker Swarm manager, deployed Jig as a service."
+echo "Marked the current manager node with jig.ingress=true for Traefik placement."
+echo "Swarm stacks push images to jig-registry:5000, so every Swarm node must trust that registry as an insecure registry."
+echo "Use /worker.sh on additional nodes to join the swarm and configure the daemon."
+echo "Your jig instance should be available on: https://$JIG_DOMAIN"
+echo "Tail logs with: docker service logs -f jig"
+docker service logs jig --tail 20 || true
 }
 
 install_standalone() {

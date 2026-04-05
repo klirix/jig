@@ -262,6 +262,16 @@ func ensureSwarmRegistryRunning(cli *client.Client) error {
 		Mode: swarm.ServiceMode{
 			Replicated: &swarm.ReplicatedService{Replicas: &replicas},
 		},
+		EndpointSpec: &swarm.EndpointSpec{
+			Ports: []swarm.PortConfig{
+				{
+					Protocol:      swarm.PortConfigProtocolTCP,
+					TargetPort:    5000,
+					PublishedPort: 5000,
+					PublishMode:   swarm.PortConfigPublishModeIngress,
+				},
+			},
+		},
 	}, types.ServiceCreateOptions{})
 	return err
 }

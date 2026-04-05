@@ -764,6 +764,36 @@ func main() {
 							return nil
 						},
 					},
+					{
+						Name:  "join-worker",
+						Usage: "Print a worker bootstrap command",
+						Flags: []cli.Flag{
+							tokenFlag,
+						},
+						Action: func(ctx *cli.Context) error {
+							if ctx.String("token") != "" {
+								config.UseTempToken(ctx.String("token"))
+							}
+							req, _ := createRequest("GET", "/cluster/join-token/worker")
+							resp, err := httpClient.Do(req)
+							if err != nil {
+								log.Fatal("Error making request: ", err)
+							}
+							defer resp.Body.Close()
+							if resp.StatusCode != http.StatusOK {
+								body, _ := io.ReadAll(resp.Body)
+								log.Fatalf("Error getting worker bootstrap command: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+							}
+
+							var joinToken jigtypes.ClusterJoinTokenResponse
+							if err := json.NewDecoder(resp.Body).Decode(&joinToken); err != nil {
+								log.Fatal("Error decoding response: ", err)
+							}
+
+							fmt.Printf("curl -fsSL https://deploywithjig.askh.at/worker.sh | JIG_SWARM_JOIN_TOKEN=%q JIG_SWARM_MANAGER_ADDR=%q bash\n", joinToken.Token, joinToken.ManagerAddress)
+							return nil
+						},
+					},
 				},
 			},
 			{

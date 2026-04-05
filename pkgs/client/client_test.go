@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -209,5 +210,17 @@ func TestPrintDeploymentRowSingleSwarmService(t *testing.T) {
 		if !strings.Contains(output, expected) {
 			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
 		}
+	}
+}
+
+func TestPrintWorkerBootstrapCommand(t *testing.T) {
+	joinToken := jigtypes.ClusterJoinTokenResponse{
+		Token:          "abc123",
+		ManagerAddress: "10.0.0.2:2377",
+	}
+
+	cmd := fmt.Sprintf("curl -fsSL https://deploywithjig.askh.at/worker.sh | JIG_SWARM_JOIN_TOKEN=%q JIG_SWARM_MANAGER_ADDR=%q bash\n", joinToken.Token, joinToken.ManagerAddress)
+	if !strings.Contains(cmd, "JIG_SWARM_JOIN_TOKEN=\"abc123\"") || !strings.Contains(cmd, "JIG_SWARM_MANAGER_ADDR=\"10.0.0.2:2377\"") {
+		t.Fatalf("unexpected bootstrap command: %s", cmd)
 	}
 }

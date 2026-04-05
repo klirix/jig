@@ -97,9 +97,10 @@ type ClusterStatusResponse struct {
 }
 
 type ClusterJoinTokenResponse struct {
-	Role    string `json:"role"`
-	Token   string `json:"token"`
-	Command string `json:"command"`
+	Role           string `json:"role"`
+	Token          string `json:"token"`
+	Command        string `json:"command"`
+	ManagerAddress string `json:"managerAddress,omitempty"`
 }
 
 type TokenListResponse struct {

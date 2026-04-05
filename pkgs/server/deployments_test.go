@@ -431,7 +431,7 @@ func TestMakeSwarmBuildOverride(t *testing.T) {
 			"api":      {Image: "ghcr.io/example/api:latest"},
 			"worker":   {Build: "./worker"},
 		},
-	}, "ringge", "registry.ringge.me")
+	}, "ringge", "127.0.0.1:5000")
 	if err != nil {
 		t.Fatalf("makeSwarmBuildOverride: %v", err)
 	}
@@ -439,8 +439,8 @@ func TestMakeSwarmBuildOverride(t *testing.T) {
 		t.Fatalf("expected 2 built images, got %#v", images)
 	}
 	for _, expected := range []string{
-		"registry.ringge.me/jig/ringge/frontend:",
-		"registry.ringge.me/jig/ringge/worker:",
+		"127.0.0.1:5000/jig/ringge/frontend:",
+		"127.0.0.1:5000/jig/ringge/worker:",
 		"frontend:",
 		"worker:",
 	} {

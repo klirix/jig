@@ -25,6 +25,38 @@ curl -fsSL https://deploywithjig.askh.at/init.sh | bash
 
 This installs Traefik and Jig, asks for the initial settings, and prints a login command for the client.
 
+### Swarm worker setup
+
+Use this on every additional node that should join the Swarm and run Jig workloads.
+
+The bootstrap script:
+
+- configures the Docker daemon for the internal Jig registry
+- joins the node to the Swarm
+- leaves ingress labeling to the manager, if needed
+
+Example:
+
+```bash
+curl -fsSL https://deploywithjig.askh.at/worker.sh | bash
+```
+
+You will be prompted for:
+- the Swarm join token
+- the manager address
+
+The manager can print a worker join token with:
+
+```bash
+jig cluster join-token worker
+```
+
+To print a ready-to-run worker bootstrap command, use:
+
+```bash
+jig cluster join-worker
+```
+
 ### Swarm-backed server setup
 
 Use this path when the Jig server itself should run on a Docker Swarm manager and deploy single-service apps as Swarm services.
@@ -41,6 +73,19 @@ On a Swarm manager, the script now:
 - labels the current node with `jig.ingress=true`
 - deploys the `jig` server as a Swarm service
 - lets the server create Traefik as a Swarm service pinned to nodes with `jig.ingress=true`
+- lets the server create an internal registry service named `jig-registry`
+
+Swarm nodes must trust that registry endpoint as an insecure registry:
+
+```json
+{
+  "insecure-registries": ["jig-registry:5000"]
+}
+```
+
+Apply that daemon config on every Swarm node and restart Docker before deploying Swarm stacks.
+
+The worker bootstrap script can apply that daemon config automatically on Debian/Ubuntu systems if `jq` is present, otherwise it will tell you what to add.
 
 Manual setup is still available if you want to control it directly:
 
@@ -135,6 +180,7 @@ Notes for Swarm-backed deployments:
 
 - Single-service non-Compose apps are deployed as Docker services.
 - Compose deployments still use `docker compose` on the server and are listed alongside other deployments.
+- Swarm stack builds are pushed to the internal `jig-registry:5000` registry, so every Swarm node must trust that endpoint as an insecure registry.
 - Swarm apps with bind mounts must set `placement.requiredNodeLabels` in `jig.json`.
 - Jig stats are not available for Swarm deployments.
 - The Jig server service should stay constrained to a manager because it needs Docker API access and Swarm control-plane access.

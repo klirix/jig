@@ -81,9 +81,10 @@ func (cr ClusterRouter) getJoinToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJson(w, http.StatusOK, jigtypes.ClusterJoinTokenResponse{
-		Role:    role,
-		Token:   token,
-		Command: fmt.Sprintf("docker swarm join --token %s %s", token, managerAddress),
+		Role:           role,
+		Token:          token,
+		Command:        fmt.Sprintf("docker swarm join --token %s %s", token, managerAddress),
+		ManagerAddress: managerAddress,
 	})
 }
 
