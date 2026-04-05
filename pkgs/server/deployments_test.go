@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	jigtypes "askh.at/jig/v2/pkgs/types"
+	"github.com/docker/docker/api/types"
 )
 
 func compareLabels(t *testing.T, expected, actual map[string]string) {
@@ -322,5 +323,32 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 	if managed[0].Config.RestartPolicy != "unless-stopped" || managed[1].Config.RestartPolicy != "unless-stopped" {
 		t.Fatalf("expected top-level restart policy to be inherited: %#v", managed)
+	}
+}
+
+func TestDeploymentRepresentativeScorePrefersLiveContainerOverRollback(t *testing.T) {
+	name := "jig-website"
+	runningCurrent := types.Container{
+		State:  "running",
+		Names:  []string{"/" + name},
+		Labels: map[string]string{"jig.name": name},
+	}
+	rollback := types.Container{
+		State:  "exited",
+		Names:  []string{"/" + name + "-prev"},
+		Labels: map[string]string{"jig.name": name},
+	}
+
+	currentScore := deploymentRepresentativeScore(name, runningCurrent)
+	rollbackScore := deploymentRepresentativeScore(name, rollback)
+
+	if currentScore <= rollbackScore {
+		t.Fatalf("expected current container score %d to be greater than rollback score %d", currentScore, rollbackScore)
+	}
+	if !isRollbackContainer(name, rollback) {
+		t.Fatal("expected rollback container to be detected")
+	}
+	if isRollbackContainer(name, runningCurrent) {
+		t.Fatal("did not expect current container to be treated as rollback")
 	}
 }

@@ -659,6 +659,30 @@ type DeploymentsRouter struct {
 	secret_db *Secrets
 }
 
+func isRollbackContainer(name string, container types.Container) bool {
+	rollbackName := "/" + name + "-prev"
+	for _, containerName := range container.Names {
+		if containerName == rollbackName {
+			return true
+		}
+	}
+	return false
+}
+
+func deploymentRepresentativeScore(name string, container types.Container) int {
+	score := 0
+	if !isRollbackContainer(name, container) {
+		score += 4
+	}
+	if container.Labels["jig.primary"] == "true" {
+		score += 2
+	}
+	if container.State == "running" {
+		score++
+	}
+	return score
+}
+
 func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Request) {
 
 	containers, err := d.cli.ContainerList(context.Background(), container.ListOptions{
@@ -677,16 +701,16 @@ func (d *DeploymentsRouter) getDeployments(w http.ResponseWriter, r *http.Reques
 		if !isJigDeployment {
 			continue
 		}
-		if ("/" + container.Labels["jig.name"] + "-prev") == container.Names[0] {
+		if isRollbackContainer(name, container) {
 			deploymentHasRollback[name] = true
 		}
-		if current, exists := representativeContainers[name]; !exists || container.Labels["jig.primary"] == "true" || current.Labels["jig.primary"] != "true" {
+		if current, exists := representativeContainers[name]; !exists || deploymentRepresentativeScore(name, container) > deploymentRepresentativeScore(name, current) {
 			representativeContainers[name] = container
 		}
 	}
 
 	for name, container := range representativeContainers {
-		if len(container.Names) > 0 && ("/"+name+"-prev") == container.Names[0] {
+		if isRollbackContainer(name, container) {
 			continue
 		}
 		deployments = append(deployments, jigtypes.Deployment{
