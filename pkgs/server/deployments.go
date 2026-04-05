@@ -335,7 +335,9 @@ type composeProjectService struct {
 }
 
 type composeManagedService struct {
+	StackName   string
 	ServiceName string
+	DisplayName string
 	Config      jigtypes.DeploymentConfig
 	Envs        map[string]string
 }
@@ -447,15 +449,25 @@ func collectManagedComposeServices(project composeProject, baseConfig jigtypes.D
 			continue
 		}
 
-		config := mergeDeploymentConfig(baseDefaults, *service.Jig, baseConfig.Name+"-"+serviceName)
+		displayName := serviceName
+		if service.Jig.Name != "" {
+			displayName = service.Jig.Name
+		}
+		config := mergeDeploymentConfig(baseDefaults, *service.Jig, baseConfig.Name+"-"+displayName)
+		if config.Name == "" {
+			config.Name = baseConfig.Name + "-" + displayName
+		}
+		if config.Hostname == "" {
+			config.Hostname = displayName
+		}
 		if err := validateComposeManagedConfig(config); err != nil {
 			return nil, fmt.Errorf("service %s: %w", serviceName, err)
 		}
 
-		if previousService, exists := seenNames[config.Name]; exists {
-			return nil, fmt.Errorf("services %s and %s both resolve to deployment name %s", previousService, serviceName, config.Name)
+		if previousService, exists := seenNames[displayName]; exists {
+			return nil, fmt.Errorf("services %s and %s both resolve to deployment name %s", previousService, serviceName, displayName)
 		}
-		seenNames[config.Name] = serviceName
+		seenNames[displayName] = serviceName
 
 		envs, err := makeEnvMap(config.Envs, secretDB)
 		if err != nil {
@@ -463,7 +475,9 @@ func collectManagedComposeServices(project composeProject, baseConfig jigtypes.D
 		}
 
 		managed = append(managed, composeManagedService{
+			StackName:   baseConfig.Name,
 			ServiceName: serviceName,
+			DisplayName: displayName,
 			Config:      config,
 			Envs:        envs,
 		})
@@ -493,12 +507,18 @@ func legacyComposeManagedService(baseConfig jigtypes.DeploymentConfig, services 
 	}
 
 	config := baseConfig
+	config.Name = baseConfig.Name + "-" + primaryService
+	if config.Hostname == "" {
+		config.Hostname = primaryService
+	}
 	config.Port = 0
 	config.ExposePorts = nil
 	config.Volumes = nil
 
 	return []composeManagedService{{
+		StackName:   baseConfig.Name,
 		ServiceName: primaryService,
+		DisplayName: primaryService,
 		Config:      config,
 		Envs:        envMap,
 	}}, nil
@@ -529,8 +549,7 @@ func makeComposeOverride(managedServices []composeManagedService) string {
 			}
 		}
 
-		labels := makeDeploymentLabels(service.Config, "compose")
-		maps.Copy(labels, makeLabels(service.Config))
+		labels := makeComposeContainerLabels(service)
 		if len(labels) > 0 {
 			builder.WriteString("    labels:\n")
 			keys := make([]string, 0, len(labels))
@@ -544,6 +563,16 @@ func makeComposeOverride(managedServices []composeManagedService) string {
 		}
 	}
 	return builder.String()
+}
+
+func makeComposeContainerLabels(service composeManagedService) map[string]string {
+	labels := makeDeploymentLabels(service.Config, "compose")
+	maps.Copy(labels, makeLabels(service.Config))
+	labels["jig.stack"] = service.StackName
+	labels["jig.service"] = service.DisplayName
+	labels["jig.display-name"] = labels["jig.stack"] + ":" + service.DisplayName
+	labels["jig.name"] = service.Config.Name
+	return labels
 }
 
 func runComposeCommand(workdir string, args ...string) ([]byte, error) {
@@ -763,42 +792,243 @@ func deploymentRepresentativeScore(name string, container types.Container) int {
 	return score
 }
 
+func deploymentHealth(state string) string {
+	if state == "running" {
+		return "healthy"
+	}
+	return "unhealthy"
+}
+
+type deploymentContainerGroup struct {
+	container   types.Container
+	hasRollback bool
+}
+
+type composeServiceGroup struct {
+	stackName string
+	services  map[string]deploymentContainerGroup
+}
+
+func betterContainer(candidate, current types.Container) bool {
+	candidateScore := deploymentRepresentativeScore(candidate.Labels["jig.name"], candidate)
+	currentScore := deploymentRepresentativeScore(current.Labels["jig.name"], current)
+	return candidateScore > currentScore
+}
+
+func buildDeployments(containers []types.Container) []jigtypes.Deployment {
+	singles := map[string]deploymentContainerGroup{}
+	composeStacks := map[string]*composeServiceGroup{}
+
+	for _, container := range containers {
+		stackName := container.Labels["jig.stack"]
+		serviceName := container.Labels["jig.service"]
+		if stackName != "" && serviceName != "" {
+			stackGroup, exists := composeStacks[stackName]
+			if !exists {
+				stackGroup = &composeServiceGroup{
+					stackName: stackName,
+					services:  map[string]deploymentContainerGroup{},
+				}
+				composeStacks[stackName] = stackGroup
+			}
+			current, exists := stackGroup.services[serviceName]
+			if !exists || betterContainer(container, current.container) {
+				stackGroup.services[serviceName] = deploymentContainerGroup{container: container}
+			}
+			continue
+		}
+
+		name, isJigDeployment := container.Labels["jig.name"]
+		if !isJigDeployment {
+			continue
+		}
+		current := singles[name]
+		if isRollbackContainer(name, container) {
+			current.hasRollback = true
+			singles[name] = current
+			continue
+		}
+		if current.container.ID == "" || betterContainer(container, current.container) {
+			current.container = container
+		}
+		singles[name] = current
+	}
+
+	names := make([]string, 0, len(composeStacks)+len(singles))
+	for name := range composeStacks {
+		names = append(names, name)
+	}
+	for name := range singles {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+
+	deployments := make([]jigtypes.Deployment, 0, len(names))
+	seen := map[string]bool{}
+	for _, name := range names {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+
+		if stackGroup, ok := composeStacks[name]; ok {
+			childNames := make([]string, 0, len(stackGroup.services))
+			for childName := range stackGroup.services {
+				childNames = append(childNames, childName)
+			}
+			slices.Sort(childNames)
+
+			children := make([]jigtypes.Deployment, 0, len(childNames))
+			healthy := true
+			for _, childName := range childNames {
+				childGroup := stackGroup.services[childName]
+				child := deploymentFromContainer(childGroup.container, childName, false)
+				children = append(children, child)
+				if child.Status != "healthy" {
+					healthy = false
+				}
+			}
+
+			parent := jigtypes.Deployment{
+				Name:     stackGroup.stackName,
+				Status:   "healthy",
+				Children: children,
+			}
+			if !healthy {
+				parent.Status = "unhealthy"
+			}
+			if len(children) > 0 {
+				parent.ID = children[0].ID
+				parent.Rule = children[0].Rule
+				parent.Lifetime = children[0].Lifetime
+			}
+			deployments = append(deployments, parent)
+			continue
+		}
+
+		group := singles[name]
+		if group.container.ID == "" {
+			continue
+		}
+		deployments = append(deployments, deploymentFromContainer(group.container, name, group.hasRollback))
+	}
+
+	return deployments
+}
+
+func deploymentFromContainer(container types.Container, name string, hasRollback bool) jigtypes.Deployment {
+	return jigtypes.Deployment{
+		ID:          container.ID,
+		Name:        name,
+		Rule:        container.Labels["traefik.http.routers."+container.Labels["jig.name"]+`.rule`],
+		Status:      deploymentHealth(container.State),
+		Lifetime:    container.Status,
+		HasRollback: hasRollback,
+	}
+}
+
+func deploymentDisplayName(container types.Container) string {
+	if displayName := container.Labels["jig.display-name"]; displayName != "" {
+		return displayName
+	}
+	if name := container.Labels["jig.name"]; name != "" {
+		return name
+	}
+	if len(container.Names) > 0 {
+		return strings.TrimPrefix(container.Names[0], "/")
+	}
+	return container.ID
+}
+
+type deploymentTargetKind string
+
+const (
+	deploymentTargetSingle       deploymentTargetKind = "single"
+	deploymentTargetComposeStack deploymentTargetKind = "compose-stack"
+	deploymentTargetComposeChild deploymentTargetKind = "compose-child"
+)
+
+type deploymentTarget struct {
+	kind        deploymentTargetKind
+	name        string
+	stackName   string
+	serviceName string
+	containers  []types.Container
+}
+
+func listContainersByLabels(cli *client.Client, labelPairs ...string) ([]types.Container, error) {
+	args := filters.NewArgs()
+	for i := 0; i+1 < len(labelPairs); i += 2 {
+		args.Add("label", labelPairs[i]+"="+labelPairs[i+1])
+	}
+	return cli.ContainerList(context.Background(), container.ListOptions{
+		All:     true,
+		Filters: args,
+	})
+}
+
+func resolveDeploymentTarget(cli *client.Client, name string) (deploymentTarget, error) {
+	if stackName, serviceName, found := strings.Cut(name, ":"); found && stackName != "" && serviceName != "" {
+		containers, err := listContainersByLabels(cli, "jig.stack", stackName, "jig.service", serviceName)
+		if err != nil {
+			return deploymentTarget{}, err
+		}
+		if len(containers) == 0 {
+			return deploymentTarget{}, nil
+		}
+		return deploymentTarget{
+			kind:        deploymentTargetComposeChild,
+			name:        name,
+			stackName:   stackName,
+			serviceName: serviceName,
+			containers:  containers,
+		}, nil
+	}
+
+	stackContainers, err := listContainersByLabels(cli, "jig.stack", name)
+	if err != nil {
+		return deploymentTarget{}, err
+	}
+	if len(stackContainers) > 0 {
+		return deploymentTarget{
+			kind:       deploymentTargetComposeStack,
+			name:       name,
+			stackName:  name,
+			containers: stackContainers,
+		}, nil
+	}
+
+	singleContainers, err := listContainersByLabels(cli, "jig.name", name)
+	if err != nil {
+		return deploymentTarget{}, err
+	}
+	if len(singleContainers) > 0 {
+		return deploymentTarget{
+			kind:       deploymentTargetSingle,
+			name:       name,
+			containers: singleContainers,
+		}, nil
+	}
+
+	return deploymentTarget{}, nil
+}
+
+func pickContainerByExactName(containers []types.Container, exactName string) *types.Container {
+	for i := range containers {
+		for _, containerName := range containers[i].Names {
+			if containerName == exactName {
+				return &containers[i]
+			}
+		}
+	}
+	return nil
+}
 func listContainerDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
 	if err != nil {
 		return nil, err
 	}
-
-	deployments := []jigtypes.Deployment{}
-	deploymentHasRollback := make(map[string]bool)
-	representativeContainers := map[string]types.Container{}
-	for _, container := range containers {
-		name, isJigDeployment := container.Labels["jig.name"]
-		if !isJigDeployment {
-			continue
-		}
-		if isRollbackContainer(name, container) {
-			deploymentHasRollback[name] = true
-		}
-		if current, exists := representativeContainers[name]; !exists || deploymentRepresentativeScore(name, container) > deploymentRepresentativeScore(name, current) {
-			representativeContainers[name] = container
-		}
-	}
-
-	for name, container := range representativeContainers {
-		if isRollbackContainer(name, container) {
-			continue
-		}
-		deployments = append(deployments, jigtypes.Deployment{
-			ID:          container.ID,
-			Name:        name,
-			Rule:        container.Labels["traefik.http.routers."+name+`-secure.rule`],
-			Status:      container.State,
-			Lifetime:    container.Status,
-			HasRollback: deploymentHasRollback[name],
-		})
-	}
-	return deployments, nil
+	return buildDeployments(containers), nil
 }
 
 func listSwarmDeployments(cli *client.Client) ([]jigtypes.Deployment, error) {
@@ -1279,14 +1509,20 @@ func (d *DeploymentsRouter) deleteDeploy(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	}
-	found, err := removeDeploymentContainers(d.cli, name)
+	target, err := resolveDeploymentTarget(d.cli, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if !found {
+	if len(target.containers) == 0 {
 		http.Error(w, "Container not found", http.StatusNotFound)
 		return
+	}
+	for _, containerInfo := range target.containers {
+		if err := d.cli.ContainerRemove(context.Background(), containerInfo.ID, container.RemoveOptions{Force: true}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -1317,26 +1553,33 @@ func (d *DeploymentsRouter) rollbackDeployment(w http.ResponseWriter, r *http.Re
 		}
 	}
 
-	currentDeployment, err := containerExistsWithName(cli, name)
+	target, err := resolveDeploymentTarget(cli, name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	if currentDeployment == nil {
+	if len(target.containers) == 0 {
 		log.Printf("Original deployment not found: %s", name)
 		http.Error(w, "Deployment not found", http.StatusNotFound)
 		return
 	}
-	rollbackTarget, err := containerExistsWithName(cli, name+"-prev")
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if target.kind != deploymentTargetSingle || target.containers[0].Labels["jig.deployment-kind"] == "compose" {
+		http.Error(w, "Rollback is not supported for compose deployments", http.StatusBadRequest)
+		return
 	}
+	if len(target.containers) == 0 {
+		http.Error(w, "Deployment not found", http.StatusNotFound)
+		return
+	}
+
+	currentDeployment := pickContainerByExactName(target.containers, "/"+name)
+	if currentDeployment == nil {
+		currentDeployment = &target.containers[0]
+	}
+	rollbackTarget := pickContainerByExactName(target.containers, "/"+name+"-prev")
 	if rollbackTarget == nil {
 		log.Printf("Container not found for rollback: %s", name)
 		http.Error(w, "Rollback targer doesn't exist", http.StatusNotFound)
-		return
-	}
-	if currentDeployment.Labels["jig.deployment-kind"] == "compose" || rollbackTarget.Labels["jig.deployment-kind"] == "compose" {
-		http.Error(w, "Rollback is not supported for compose deployments", http.StatusBadRequest)
 		return
 	}
 
@@ -1397,39 +1640,61 @@ func (dr *DeploymentsRouter) getDeploymentLogs(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-
-	containers, err := dr.cli.ContainerList(context.Background(), container.ListOptions{
-		All: true,
-	})
+	target, err := resolveDeploymentTarget(dr.cli, name)
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	found := false
-	w.Header().Set("Content-Type", "text/plain")
-	for _, containerInfo := range containers {
-		if containerInfo.Labels["jig.name"] == name {
-			logs, err := dr.cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
-				ShowStdout: true,
-				ShowStderr: true,
-			})
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			found = true
-			if len(containerInfo.Names) > 0 {
-				fmt.Fprintf(w, "== %s ==\n", strings.TrimPrefix(containerInfo.Names[0], "/"))
-			}
-			io.Copy(w, logs)
-			fmt.Fprint(w, "\n")
-		}
+	if len(target.containers) == 0 {
+		http.Error(w, "Container not found", http.StatusNotFound)
+		return
 	}
 
-	if !found {
-		http.Error(w, "Container not found", http.StatusNotFound)
+	w.Header().Set("Content-Type", "text/plain")
+	if target.kind == deploymentTargetComposeStack {
+		grouped := map[string][]types.Container{}
+		serviceNames := make([]string, 0, len(target.containers))
+		for _, containerInfo := range target.containers {
+			serviceName := containerInfo.Labels["jig.service"]
+			grouped[serviceName] = append(grouped[serviceName], containerInfo)
+		}
+		for serviceName := range grouped {
+			serviceNames = append(serviceNames, serviceName)
+		}
+		slices.Sort(serviceNames)
+		for _, serviceName := range serviceNames {
+			fmt.Fprintf(w, "== %s:%s ==\n", target.stackName, serviceName)
+			for _, containerInfo := range grouped[serviceName] {
+				logs, err := dr.cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
+					ShowStdout: true,
+					ShowStderr: true,
+				})
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				io.Copy(w, logs)
+				fmt.Fprint(w, "\n")
+			}
+		}
+		return
+	}
+
+	for _, containerInfo := range target.containers {
+		logs, err := dr.cli.ContainerLogs(context.Background(), containerInfo.ID, container.LogsOptions{
+			ShowStdout: true,
+			ShowStderr: true,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(target.containers) > 1 {
+			fmt.Fprintf(w, "== %s ==\n", deploymentDisplayName(containerInfo))
+		}
+		io.Copy(w, logs)
+		fmt.Fprint(w, "\n")
 	}
 }
 
@@ -1488,7 +1753,7 @@ func (dr *DeploymentsRouter) getDeploymentStats(w http.ResponseWriter, r *http.R
 		cpuNum := containerStats.CPUStats.OnlineCPUs
 
 		allStats = append(allStats, jigtypes.Stats{
-			Name:             container.Names[0],
+			Name:             deploymentDisplayName(container),
 			MemoryBytes:      math.Round((float64(usedMemory)/(1024*1024))*100) / 100,
 			MemoryPercentage: math.Round((float64(usedMemory)/float64(containerStats.MemoryStats.Limit))*10000) / 100,
 			CpuPercentage:    math.Round((float64(cpuD)/float64(sysCpuD))*float64(cpuNum)*10000) / 100,

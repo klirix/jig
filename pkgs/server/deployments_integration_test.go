@@ -174,8 +174,10 @@ func TestComposeDeploymentE2E(t *testing.T) {
 
 	projectDir := t.TempDir()
 	projectName := fmt.Sprintf("compose-e2e-%d", time.Now().UnixNano())
-	frontendName := projectName + "-frontend"
-	apiName := projectName + "-api"
+	frontendService := "frontend"
+	apiService := "api"
+	frontendInternalName := projectName + "-" + frontendService
+	apiInternalName := projectName + "-" + apiService
 
 	writeIntegrationFile(t, projectDir, "docker-compose.yaml", fmt.Sprintf(`
 services:
@@ -201,11 +203,11 @@ services:
   db:
     image: busybox:1.36
     command: ["sh", "-c", "while true; do sleep 5; done"]
-`, frontendName, apiName))
+`, frontendService, apiService))
 
 	t.Cleanup(func() {
-		cleanupDeploymentByName(t, cli, frontendName)
-		cleanupDeploymentByName(t, cli, apiName)
+		cleanupDeploymentByName(t, cli, frontendInternalName)
+		cleanupDeploymentByName(t, cli, apiInternalName)
 		_, _ = runComposeCommand(projectDir, "-p", projectName, "-f", "docker-compose.yaml", "down", "--remove-orphans")
 	})
 
@@ -224,13 +226,13 @@ services:
 		t.Fatalf("deploy status %d: %s", res.StatusCode, string(body))
 	}
 
-	frontendContainer := waitForContainerByLabel(t, cli, "jig.name="+frontendName)
-	apiContainer := waitForContainerByLabel(t, cli, "jig.name="+apiName)
+	frontendContainer := waitForContainerByLabel(t, cli, "jig.display-name="+projectName+":"+frontendService)
+	apiContainer := waitForContainerByLabel(t, cli, "jig.display-name="+projectName+":"+apiService)
 
-	if frontendContainer.Labels["traefik.http.routers."+frontendName+".rule"] != "Host(`frontend.example.test`)" {
+	if frontendContainer.Labels["traefik.http.routers."+frontendInternalName+".rule"] != "Host(`frontend.example.test`)" {
 		t.Fatalf("unexpected frontend rule: %#v", frontendContainer.Labels)
 	}
-	if apiContainer.Labels["traefik.http.routers."+apiName+".rule"] != "Host(`api.example.test`)" {
+	if apiContainer.Labels["traefik.http.routers."+apiInternalName+".rule"] != "Host(`api.example.test`)" {
 		t.Fatalf("unexpected api rule: %#v", apiContainer.Labels)
 	}
 
@@ -263,11 +265,26 @@ services:
 		t.Fatalf("decode deployments: %v", err)
 	}
 
-	names := map[string]bool{}
-	for _, deployment := range listed {
-		names[deployment.Name] = true
+	if len(listed) != 1 {
+		t.Fatalf("expected one stack deployment in %#v", listed)
 	}
-	if !names[frontendName] || !names[apiName] {
-		t.Fatalf("expected frontend and api deployments in %#v", listed)
+	if listed[0].Name != projectName {
+		t.Fatalf("expected stack name %q in %#v", projectName, listed)
+	}
+	if listed[0].Status != "healthy" {
+		t.Fatalf("expected healthy stack in %#v", listed)
+	}
+	if len(listed[0].Children) != 2 {
+		t.Fatalf("expected two child services in %#v", listed[0])
+	}
+	childNames := map[string]bool{}
+	for _, child := range listed[0].Children {
+		childNames[child.Name] = true
+		if child.Status != "healthy" {
+			t.Fatalf("expected healthy child in %#v", child)
+		}
+	}
+	if !childNames[frontendService] || !childNames[apiService] {
+		t.Fatalf("expected frontend and api child services in %#v", listed[0])
 	}
 }

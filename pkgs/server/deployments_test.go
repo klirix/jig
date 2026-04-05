@@ -244,9 +244,11 @@ func TestPickComposePrimaryService(t *testing.T) {
 func TestMakeComposeOverride(t *testing.T) {
 	override := makeComposeOverride([]composeManagedService{
 		{
+			StackName:   "stack",
 			ServiceName: "web",
+			DisplayName: "frontend",
 			Config: jigtypes.DeploymentConfig{
-				Name:          "frontend",
+				Name:          "stack-frontend",
 				ComposeFile:   "docker-compose.yaml",
 				RestartPolicy: "unless-stopped",
 				Domain:        "app.example.com",
@@ -257,9 +259,11 @@ func TestMakeComposeOverride(t *testing.T) {
 			},
 		},
 		{
+			StackName:   "stack",
 			ServiceName: "api",
+			DisplayName: "api",
 			Config: jigtypes.DeploymentConfig{
-				Name:        "api",
+				Name:        "stack-api",
 				ComposeFile: "docker-compose.yaml",
 				Domain:      "api.example.com",
 				Middlewares: jigtypes.DeploymentMiddleares{},
@@ -272,11 +276,16 @@ func TestMakeComposeOverride(t *testing.T) {
 		`"api":`,
 		`restart: "unless-stopped"`,
 		`"API_TOKEN": "secret"`,
-		`"jig.name": "frontend"`,
-		`"jig.name": "api"`,
+		`"jig.stack": "stack"`,
+		`"jig.service": "frontend"`,
+		`"jig.service": "api"`,
+		`"jig.display-name": "stack:frontend"`,
+		`"jig.display-name": "stack:api"`,
+		`"jig.name": "stack-frontend"`,
+		`"jig.name": "stack-api"`,
 		`"jig.deployment-kind": "compose"`,
-		`"traefik.http.routers.frontend-secure.rule": "Host(` + "`app.example.com`" + `)"`,
-		`"traefik.http.routers.api-secure.rule": "Host(` + "`api.example.com`" + `)"`,
+		`"traefik.http.routers.stack-frontend-secure.rule": "Host(` + "`app.example.com`" + `)"`,
+		`"traefik.http.routers.stack-api-secure.rule": "Host(` + "`api.example.com`" + `)"`,
 	}
 
 	for _, snippet := range expectedSnippets {
@@ -321,6 +330,12 @@ func TestCollectManagedComposeServices(t *testing.T) {
 	}
 	if len(managed) != 2 {
 		t.Fatalf("expected 2 managed services, got %d", len(managed))
+	}
+	if managed[0].StackName != "stack" || managed[1].StackName != "stack" {
+		t.Fatalf("expected stack name to be inherited: %#v", managed)
+	}
+	if managed[0].DisplayName != "api" && managed[1].DisplayName != "api" {
+		t.Fatalf("expected api display name in %#v", managed)
 	}
 	if managed[0].Config.RestartPolicy != "unless-stopped" || managed[1].Config.RestartPolicy != "unless-stopped" {
 		t.Fatalf("expected top-level restart policy to be inherited: %#v", managed)
@@ -423,6 +438,80 @@ func TestMakeSwarmServiceSpec(t *testing.T) {
 	}
 	if spec.TaskTemplate.RestartPolicy == nil || spec.TaskTemplate.RestartPolicy.MaxAttempts == nil || *spec.TaskTemplate.RestartPolicy.MaxAttempts != 4 {
 		t.Fatalf("unexpected restart policy %#v", spec.TaskTemplate.RestartPolicy)
+	}
+}
+
+func TestBuildDeploymentsGroupsComposeStack(t *testing.T) {
+	containers := []types.Container{
+		{
+			ID:     "child1",
+			State:  "running",
+			Status: "Up",
+			Names:  []string{"/stack-frontend"},
+			Labels: map[string]string{
+				"jig.deployment-kind": "compose",
+				"jig.stack":           "stack",
+				"jig.service":         "frontend",
+				"jig.display-name":    "stack:frontend",
+				"jig.name":            "stack-frontend",
+				"traefik.http.routers.stack-frontend.rule": "Host(`app.example.com`)",
+			},
+		},
+		{
+			ID:     "child2",
+			State:  "exited",
+			Status: "Exited (0)",
+			Names:  []string{"/stack-api"},
+			Labels: map[string]string{
+				"jig.deployment-kind":                 "compose",
+				"jig.stack":                           "stack",
+				"jig.service":                         "api",
+				"jig.display-name":                    "stack:api",
+				"jig.name":                            "stack-api",
+				"traefik.http.routers.stack-api.rule": "Host(`api.example.com`)",
+			},
+		},
+		{
+			ID:     "solo",
+			State:  "running",
+			Status: "Up",
+			Names:  []string{"/solo"},
+			Labels: map[string]string{
+				"jig.name":                       "solo",
+				"traefik.http.routers.solo.rule": "Host(`solo.example.com`)",
+			},
+		},
+	}
+
+	deployments := buildDeployments(containers)
+	if len(deployments) != 2 {
+		t.Fatalf("expected 2 top-level deployments, got %#v", deployments)
+	}
+
+	if deployments[0].Name != "solo" && deployments[1].Name != "solo" {
+		t.Fatalf("expected solo deployment in %#v", deployments)
+	}
+
+	var stack jigtypes.Deployment
+	for _, deployment := range deployments {
+		if deployment.Name == "stack" {
+			stack = deployment
+		}
+	}
+	if stack.Name != "stack" {
+		t.Fatalf("expected stack deployment in %#v", deployments)
+	}
+	if stack.Status != "unhealthy" {
+		t.Fatalf("expected stack health to reflect the worst child, got %#v", stack)
+	}
+	if len(stack.Children) != 2 {
+		t.Fatalf("expected two child services, got %#v", stack.Children)
+	}
+	if stack.Children[0].Name != "api" && stack.Children[1].Name != "api" {
+		t.Fatalf("expected api child in %#v", stack.Children)
+	}
+	if stack.Children[0].Status != "healthy" && stack.Children[1].Status != "healthy" {
+		t.Fatalf("expected one healthy child in %#v", stack.Children)
 	}
 }
 

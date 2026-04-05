@@ -310,7 +310,7 @@ func main() {
 
 					{
 						Name:  "rm",
-						Usage: "Stop a container",
+						Usage: "Delete a deployment or stack:service",
 						Flags: []cli.Flag{
 							&cli.BoolFlag{
 								Name:    "verbose",
@@ -321,7 +321,7 @@ func main() {
 							tokenFlag,
 						},
 						Args:      true,
-						ArgsUsage: " name",
+						ArgsUsage: " name|stack:service",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
 								config.UseTempToken(ctx.String("token"))
@@ -346,7 +346,7 @@ func main() {
 					},
 					{
 						Name:  "rollback",
-						Usage: "Rollback a deployment",
+						Usage: "Rollback a single-container deployment",
 						Flags: []cli.Flag{
 							&cli.BoolFlag{
 								Name:    "verbose",
@@ -357,7 +357,7 @@ func main() {
 							tokenFlag,
 						},
 						Args:      true,
-						ArgsUsage: " name",
+						ArgsUsage: " name|stack:service",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
 								config.UseTempToken(ctx.String("token"))
@@ -382,12 +382,12 @@ func main() {
 					},
 					{
 						Name:  "logs",
-						Usage: "Get logs for a container",
+						Usage: "Get logs for a deployment or stack:service",
 						Args:  true,
 						Flags: []cli.Flag{
 							tokenFlag,
 						},
-						ArgsUsage: "deployment name",
+						ArgsUsage: " name|stack:service",
 						Action: func(ctx *cli.Context) error {
 							if ctx.String("token") != "" {
 								config.UseTempToken(ctx.String("token"))
@@ -687,19 +687,19 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\thas rollback")
+	fmt.Fprintln(writer, "  name\tstatus")
 	for _, deployment := range deployments {
-		fmt.Fprintf(writer, "  %s\t%s\t%s\t%s\t%s\n", deployment.Name, deployment.Rule, deployment.Status, deployment.Lifetime, yesOrNo(deployment.HasRollback))
+		printDeploymentRow(writer, deployment, "")
 	}
 	writer.Flush()
 	return nil
 }
 
-func yesOrNo(b bool) string {
-	if b {
-		return "yes"
+func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string) {
+	fmt.Fprintf(writer, "  %s%s\t%s\n", prefix, deployment.Name, deployment.Status)
+	for _, child := range deployment.Children {
+		printDeploymentRow(writer, child, prefix+"\\_")
 	}
-	return ""
 }
 
 func ListSecrets(ctx *cli.Context) error {
