@@ -687,19 +687,30 @@ func listDeployments(ctx *cli.Context) error {
 
 	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 1, '\t', tabwriter.AlignRight)
 	println("> Current deployments:\n")
-	fmt.Fprintln(writer, "  name\tstatus")
+	fmt.Fprintln(writer, "  name\trule\tstate\tstatus\thas rollback")
 	for _, deployment := range deployments {
-		printDeploymentRow(writer, deployment, "")
+		printDeploymentRow(writer, deployment, "", len(deployment.Children) > 0)
 	}
 	writer.Flush()
 	return nil
 }
 
-func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string) {
-	fmt.Fprintf(writer, "  %s%s\t%s\n", prefix, deployment.Name, deployment.Status)
-	for _, child := range deployment.Children {
-		printDeploymentRow(writer, child, prefix+"\\_")
+func printDeploymentRow(writer *tabwriter.Writer, deployment jigtypes.Deployment, prefix string, isStack bool) {
+	if isStack {
+		fmt.Fprintf(writer, "  %s%s\t\t\t%s\t\n", prefix, deployment.Name, deployment.Status)
+		for _, child := range deployment.Children {
+			printDeploymentRow(writer, child, prefix+"\\_", false)
+		}
+		return
 	}
+	fmt.Fprintf(writer, "  %s%s\t%s\t%s\t%s\t%s\n", prefix, deployment.Name, deployment.Rule, deployment.Lifetime, deployment.Status, yesOrNo(deployment.HasRollback))
+}
+
+func yesOrNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return ""
 }
 
 func ListSecrets(ctx *cli.Context) error {

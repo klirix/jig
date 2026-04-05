@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"text/tabwriter"
+
+	jigtypes "askh.at/jig/v2/pkgs/types"
 )
 
 func TestLoadIgnorePatternsKeepsDefaultsAndSkipsComments(t *testing.T) {
@@ -116,5 +121,54 @@ func TestResolveComposeFileConfiguredMissing(t *testing.T) {
 	_, _, err := resolveComposeFile(tempDir, "docker-compose.yaml")
 	if err == nil {
 		t.Fatal("expected an error for missing configured compose file")
+	}
+}
+
+func TestPrintDeploymentRowRendersFlatAndStackDeployments(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := tabwriter.NewWriter(&buffer, 0, 8, 1, '\t', tabwriter.AlignRight)
+
+	flat := jigtypes.Deployment{
+		Name:        "babyl",
+		Rule:        "Host(`babyl.example.test`)",
+		Status:      "healthy",
+		Lifetime:    "Up 2 minutes",
+		HasRollback: true,
+	}
+	stack := jigtypes.Deployment{
+		Name:   "my-stack",
+		Status: "healthy",
+		Children: []jigtypes.Deployment{
+			{
+				Name:     "api",
+				Rule:     "Host(`api.example.test`)",
+				Status:   "healthy",
+				Lifetime: "Up 1 minute",
+			},
+			{
+				Name:     "db",
+				Status:   "unhealthy",
+				Lifetime: "Exited (1)",
+			},
+		},
+	}
+
+	printDeploymentRow(writer, flat, "", false)
+	printDeploymentRow(writer, stack, "", true)
+	writer.Flush()
+
+	output := buffer.String()
+	for _, expected := range []string{
+		"babyl",
+		"Host(`babyl.example.test`)",
+		"Up 2 minutes",
+		"yes",
+		"my-stack",
+		"\\_api",
+		"\\_db",
+	} {
+		if !strings.Contains(output, expected) {
+			t.Fatalf("expected output to contain %q, got:\n%s", expected, output)
+		}
 	}
 }
