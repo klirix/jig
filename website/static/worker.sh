@@ -13,7 +13,7 @@ if [[ -z "${JIG_SWARM_MANAGER_ADDR:-}" ]]; then
 fi
 
 if [[ -z "${JIG_SWARM_REGISTRY:-}" ]]; then
-  JIG_SWARM_REGISTRY="jig-registry:5000"
+  JIG_SWARM_REGISTRY="127.0.0.1:5000"
 fi
 
 if [[ -z "${JIG_SWARM_INSECURE_REGISTRY:-}" ]]; then
@@ -52,5 +52,7 @@ echo "Joining swarm..."
 
 echo
 echo "Node joined the swarm."
+echo "Docker on this node should trust $JIG_SWARM_INSECURE_REGISTRY as an insecure registry."
+echo "Block inbound TCP/5000 from external networks. If port 5000 is left exposed, the registry is a serious security risk."
 echo "If this is an ingress node, label it on the manager:"
 echo "docker node update --label-add jig.ingress=true <node-name>"

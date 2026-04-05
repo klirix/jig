@@ -136,8 +136,14 @@
 					/>
 				</div>
 				<p class="">
-					This will load traefik, jig, ask you for an email, jwt signing key, launch everything and
-					spit out a command to run on your machine to login
+					This will load Traefik and Jig, then ask whether the Jig control plane should be exposed
+					publicly or only through Tailscale. The script launches everything and prints the
+					<code class="rounded bg-gray-900 px-2">jig login</code> command to run on your machine
+				</p>
+				<p>
+					If Tailscale is installed on the server, the bootstrap flow defaults to a private control
+					plane and configures <code class="rounded bg-gray-900 px-2">tailscale serve</code> for
+					the Jig API. Your deployed apps can still stay public through Traefik
 				</p>
 				<p>
 					Login command will look something like <code class="rounded bg-gray-900 px-2"

@@ -29,10 +29,29 @@ import (
 )
 
 const defaultSwarmIngressLabel = "jig.ingress=true"
-const defaultSwarmRegistryHost = "jig-registry:5000"
+const defaultSwarmRegistryHost = "127.0.0.1:5000"
 
 func swarmRegistryHost() string {
 	return defaultSwarmRegistryHost
+}
+
+func advertisedServerURL() string {
+	if url := strings.TrimSpace(os.Getenv("JIG_ADVERTISE_URL")); url != "" {
+		return url
+	}
+	if domain := strings.TrimSpace(os.Getenv("JIG_DOMAIN")); domain != "" {
+		return "https://" + domain
+	}
+	return ""
+}
+
+func hasInsecureTraefikAPI(args []string) bool {
+	for _, arg := range args {
+		if arg == "--api.insecure=true" {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
@@ -79,9 +98,19 @@ func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 		return ensureTraefikRunning(cli, backend)
 	}
 	if containerId != "" {
+		inspected, err := cli.ContainerInspect(context.Background(), containerId)
+		if err != nil {
+			return err
+		}
+		if hasInsecureTraefikAPI(inspected.Config.Cmd) {
+			if err := cli.ContainerRemove(context.Background(), containerId, container.RemoveOptions{Force: true}); err != nil {
+				return err
+			}
+			return ensureTraefikRunning(cli, backend)
+		}
 		if !isRunning {
 			if err := cli.ContainerStart(context.Background(), containerId, container.StartOptions{}); err != nil {
-				println("Failed to restart contnainer, removing...", err.Error())
+				println("Failed to restart container, removing...", err.Error())
 				cli.ContainerRemove(context.Background(), containerId, container.RemoveOptions{})
 				return ensureTraefikRunning(cli, backend)
 			}
@@ -89,7 +118,6 @@ func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 	} else {
 		envs := []string{}
 		commands := []string{
-			"--api.insecure=true",
 			"--log.level=DEBUG",
 			"--entrypoints.web.address=:80",
 			"--entrypoints.websecure.address=:443",
@@ -113,9 +141,8 @@ func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 			Image: "traefik:2.11",
 			Cmd:   commands,
 			ExposedPorts: map[nat.Port]struct{}{
-				"80/tcp":   {},
-				"443/tcp":  {},
-				"8080/tcp": {},
+				"80/tcp":  {},
+				"443/tcp": {},
 			},
 			Env: envs,
 		}, &container.HostConfig{
@@ -127,9 +154,8 @@ func ensureTraefikRunning(cli *client.Client, backend deploymentBackend) error {
 				"/var/jig:/var/jig",
 			},
 			PortBindings: map[nat.Port][]nat.PortBinding{
-				"80/tcp":   {{HostPort: "80/tcp"}},
-				"443/tcp":  {{HostPort: "443/tcp"}},
-				"8080/tcp": {{HostPort: "8080/tcp"}},
+				"80/tcp":  {{HostPort: "80/tcp"}},
+				"443/tcp": {{HostPort: "443/tcp"}},
 			},
 		}, &network.NetworkingConfig{}, &v1.Platform{}, "traefik")
 
@@ -160,12 +186,18 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 		return err
 	}
 	if len(services) > 0 {
+		args := services[0].Spec.TaskTemplate.ContainerSpec.Args
+		if hasInsecureTraefikAPI(args) {
+			if err := cli.ServiceRemove(context.Background(), services[0].ID); err != nil {
+				return err
+			}
+			return ensureSwarmTraefikRunning(cli)
+		}
 		return nil
 	}
 
 	envs := []string{}
 	commands := []string{
-		"--api.insecure=true",
 		"--log.level=DEBUG",
 		"--entrypoints.web.address=:80",
 		"--entrypoints.websecure.address=:443",
@@ -217,7 +249,6 @@ func ensureSwarmTraefikRunning(cli *client.Client) error {
 			Ports: []swarm.PortConfig{
 				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 80, PublishedPort: 80, PublishMode: swarm.PortConfigPublishModeIngress},
 				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 443, PublishedPort: 443, PublishMode: swarm.PortConfigPublishModeIngress},
-				{Protocol: swarm.PortConfigProtocolTCP, TargetPort: 8080, PublishedPort: 8080, PublishMode: swarm.PortConfigPublishModeIngress},
 			},
 		},
 	}, types.ServiceCreateOptions{})
@@ -528,8 +559,12 @@ func serve() {
 			}
 			log.Println("Created default token:", defaultToken.Name)
 			fmt.Print("Your new jwt secret key ✨🔑:\njig login ")
-
-			fmt.Printf("https://%s+%s\n", os.Getenv("JIG_DOMAIN"), defaultToken.Token)
+			advertiseURL := advertisedServerURL()
+			if advertiseURL != "" {
+				fmt.Printf("%s+%s\n", advertiseURL, defaultToken.Token)
+			} else {
+				fmt.Printf("<server-url>+%s\n", defaultToken.Token)
+			}
 
 		}
 	}()
