@@ -854,3 +854,42 @@ func TestDeploymentRepresentativeScorePrefersLiveContainerOverRollback(t *testin
 		t.Fatal("did not expect current container to be treated as rollback")
 	}
 }
+
+func TestBuildDeploymentsIgnoresSwarmContainers(t *testing.T) {
+	containers := []types.Container{
+		{
+			// This represents a swarm deployment's container that should be ignored
+			// by buildDeployments when in swarm mode (the swarm service listing
+			// will provide the canonical entry instead).
+			ID:    "swarm-container-id",
+			State: "running",
+			Names: []string{"/jig-website"},
+			Labels: map[string]string{
+				"jig.name":                              "jig-website",
+				"jig.deployment-kind":                   "swarm",
+				"traefik.http.routers.jig-website.rule": "Host(`deploywithjig.askh.at`)",
+			},
+		},
+		{
+			ID:    "regular-container-id",
+			State: "running",
+			Names: []string{"/regular-app"},
+			Labels: map[string]string{
+				"jig.name":                              "regular-app",
+				"traefik.http.routers.regular-app.rule": "Host(`regular.example.com`)",
+			},
+		},
+	}
+
+	deployments := buildDeployments(containers)
+	if len(deployments) != 1 {
+		t.Fatalf("expected only 1 deployment (the regular container), got %d: %#v", len(deployments), deployments)
+	}
+
+	if deployments[0].Name != "regular-app" {
+		t.Fatalf("expected regular-app deployment, got %#v", deployments[0])
+	}
+	if deployments[0].Kind != "service" {
+		t.Fatalf("expected service kind, got %#v", deployments[0])
+	}
+}

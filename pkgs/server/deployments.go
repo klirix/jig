@@ -1224,6 +1224,10 @@ func buildDeployments(containers []types.Container) []jigtypes.Deployment {
 		if !isJigDeployment {
 			continue
 		}
+		// Skip containers that belong to swarm services (they're listed separately)
+		if container.Labels["jig.deployment-kind"] == "swarm" {
+			continue
+		}
 		current := singles[name]
 		if isRollbackContainer(name, container) {
 			current.hasRollback = true
