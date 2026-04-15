@@ -10,9 +10,9 @@
 	<title>Jig - a dead simple deployment tool</title>
 </svelte:head>
 
-<main class="w-full bg-gray-100 dark:bg-gray-900">
+<main class="w-full bg-gradient-to-b from-gray-50 dark:from-gray-950 to-white dark:to-gray-800">
 	<section
-		class="bg-white dark:bg-gray-800 mx-auto container lg:max-w-4xl py-52 px-4 md:px-28 shadow-lg"
+		class="bg-gradient-to-r from-gray-50 dark:from-gray-950 to-white dark:to-gray-800 mx-auto container lg:max-w-4xl py-52 px-4 md:px-28 shadow-lg"
 	>
 		<div class="pb-10">
 			<h1

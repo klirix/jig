@@ -13,9 +13,70 @@ normalize_url() {
   printf '%s' "${value%/}"
 }
 
+extract_bootstrap_login_command() {
+  awk '
+    /jig login / {
+      sub(/^.*jig login /, "jig login ")
+      print
+      exit
+    }
+  '
+}
+
+wait_for_bootstrap_login_command() {
+  local log_source="$1"
+  local log_cmd=()
+
+  case "$log_source" in
+    service)
+      log_cmd=(docker service logs --tail 200 -f jig)
+      ;;
+    container)
+      log_cmd=(docker logs --tail 200 -f jig)
+      ;;
+    *)
+      echo "Invalid log source: $log_source" >&2
+      return 1
+      ;;
+  esac
+
+  local login_command=""
+  if command -v timeout >/dev/null 2>&1; then
+    login_command="$(timeout 60s "${log_cmd[@]}" 2>&1 | extract_bootstrap_login_command || true)"
+  else
+    login_command="$("${log_cmd[@]}" 2>&1 | extract_bootstrap_login_command || true)"
+  fi
+
+  if [[ -n "$login_command" ]]; then
+    echo
+    echo "Bootstrap login command:"
+    echo "$login_command"
+    return 0
+  fi
+
+  echo
+  echo "Could not automatically find the bootstrap login command."
+  if [[ "$log_source" == "service" ]]; then
+    echo "Run: docker service logs -f jig"
+  else
+    echo "Run: docker logs -f jig"
+  fi
+  return 1
+}
+
 detect_tailscale_dns_name() {
   local dns_name
-  dns_name="$(tailscale status --json 2>/dev/null | grep -m1 -o '"DNSName":"[^"]*"' | cut -d'"' -f4 || true)"
+  if command -v jq >/dev/null 2>&1; then
+    dns_name="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' 2>/dev/null || true)"
+  else
+    dns_name="$(
+      tailscale status --json 2>/dev/null \
+        | tr -d '[:space:]' \
+        | sed -n 's/.*"Self":{[^}]*"DNSName":"\([^"]*\)".*/\1/p' \
+        | head -n1 \
+        || true
+    )"
+  fi
   printf '%s' "${dns_name%.}"
 }
 
@@ -196,14 +257,14 @@ install_swarm() {
   if [[ "$JIG_CONTROL_MODE" == "public" ]]; then
     echo "Deployed Jig as a Swarm service."
     print_public_summary
-    echo "Tail logs with: docker service logs -f jig"
-    docker service logs jig --tail 20 || true
+    echo "Waiting for the bootstrap login command in the service logs..."
+    wait_for_bootstrap_login_command service || true
   else
     echo "Started Jig as a local manager container so the control plane stays on 127.0.0.1:$JIG_TAILSCALE_LOCAL_PORT."
     print_tailscale_summary
     echo "The Jig API listens on 127.0.0.1:$JIG_TAILSCALE_LOCAL_PORT and is reachable through Tailscale Serve."
-    echo "Tail logs with: docker logs -f jig"
-    docker logs --tail 20 jig || true
+    echo "Waiting for the bootstrap login command in the container logs..."
+    wait_for_bootstrap_login_command container || true
   fi
   echo "Use /worker.sh on additional nodes to join the swarm and configure the daemon."
 }
@@ -258,7 +319,8 @@ install_standalone() {
     print_tailscale_summary
     echo "The Jig API listens on 127.0.0.1:$JIG_TAILSCALE_LOCAL_PORT and is reachable through Tailscale Serve."
   fi
-  docker logs --tail 3 jig
+  echo "Waiting for the bootstrap login command in the container logs..."
+  wait_for_bootstrap_login_command container || true
 }
 
 prompt_settings
